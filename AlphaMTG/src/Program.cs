@@ -39,6 +39,9 @@ internal static class Program
       logOn: true
     );
 
+    using var gameStateExporter = new GameStateExporter(logger);
+    gameStateExporter.Start();
+
     logger.LogInformation(
       "MTGO client started. Waiting for shutdown."
     );
