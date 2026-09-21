@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>Latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <OutputType>Exe</OutputType>
+    <EnableWindowsTargeting Condition="'$(OS)' != 'Windows_NT'">true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MTGOSDK"
+                      Version="1.5.2.20260629" />
+    <PackageReference Include="MTGOSDK.Win32"
+                      Version="1.5.2.20260629" />
+    <PackageReference Include="Microsoft.Extensions.Logging"
+                      Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console"
+                      Version="10.0.3" />
+  </ItemGroup>
+</Project>
