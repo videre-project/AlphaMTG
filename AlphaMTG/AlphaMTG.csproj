@@ -10,6 +10,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Keep the standalone FlaUI CLI from being included by this project's
+         default recursive source-file glob. -->
+    <Compile Remove="FlaUIInspector/**/*.cs" />
     <PackageReference Include="MTGOSDK"
                       Version="1.5.2.20260629" />
     <PackageReference Include="MTGOSDK.Win32"

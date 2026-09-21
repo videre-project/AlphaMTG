@@ -1,0 +1,46 @@
+# AlphaMTG development container.
+#
+# Use the host desktop for interactive Wine testing. MTGO and FlaUInspect run
+# in the same Wine prefix so the inspector can see MTGO's UI.
+
+name: alphamtg
+
+services:
+  alphamtg:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: alphamtg:dev
+    init: true
+    ipc: host
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    tmpfs:
+      - /tmp/runtime-dir:uid=1000,gid=1000,mode=0700
+    environment:
+      DISPLAY: ${DISPLAY:-}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-wayland-0}
+      XDG_RUNTIME_DIR: /tmp/runtime-dir
+      WINEDEBUG: -all
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_X11_NO_MITSHM: "1"
+      GDK_BACKEND: x11
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      GALLIUM_DRIVER: llvmpipe
+      # The WPF FlaUInspect window is kept as an optional tool, but the stable
+      # diagnostic path is the CLI: `docker compose exec alphamtg run-flaui-dump`.
+      FLAUINSPECT_AUTOSTART: "0"
+      FLAUINSPECT_START_DELAY: "15"
+      FLAUINSPECT_MTGO_WAIT_TIMEOUT: "120"
+    volumes:
+      - .:/workspace
+      - alphamtg-wine-data:/home/wine/.wine
+      - ${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set}/${WAYLAND_DISPLAY:-wayland-0}:/tmp/runtime-dir/${WAYLAND_DISPLAY:-wayland-0}
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    # Bypass the MTGOSDK base entrypoint, which otherwise clones MTGOSDK into
+    # this application workspace when it does not find SDK.sln.
+    entrypoint: ["/usr/local/bin/run-alphamtg"]
+
+volumes:
+  alphamtg-wine-data:
