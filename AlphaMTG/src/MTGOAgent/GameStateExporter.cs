@@ -3,16 +3,11 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 
 using Microsoft.Extensions.Logging;
 
+using MTGOSDK.API.Play;
 using MTGOSDK.API.Play.Games;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.API.Play.Games.Processors.EventArgs;
@@ -20,25 +15,22 @@ using MTGOSDK.API.Play.Games.Processors.EventArgs;
 
 namespace AlphaMTG.MTGOAgent;
 
-internal sealed class GameStateExporter(ILogger logger) : IDisposable
+internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisposable
 {
-  private static readonly JsonSerializerOptions s_jsonOptions = new()
-  {
-    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    WriteIndented = true
-  };
-
   private readonly ConcurrentDictionary<int, Game> _games = new();
+  private readonly ConcurrentDictionary<int, GamePrompt> _prompts = new();
   private readonly object _writeLock = new();
-  private readonly string _outputPath = Environment.GetEnvironmentVariable(
-    "ALPHAMTG_GAME_STATE_PATH"
-  ) ?? Path.Combine("AlphaMTG", "FlaUIInspector", "mtgo-game.json");
+  private readonly string _outputPath = AgentStateStore.DefaultPath;
 
   public void Start()
   {
     GameProcessor.OnNewGame += AttachGame;
     GameProcessor.EnsureHookInitialized();
+    foreach (var match in EventManager.JoinedEvents.OfType<Match>())
+    {
+      if (match.CurrentGame is { } game)
+        AttachGame(game);
+    }
     logger.LogInformation("MTGO game-state exporter is ready.");
   }
 
@@ -47,34 +39,56 @@ internal sealed class GameStateExporter(ILogger logger) : IDisposable
     if (!_games.TryAdd(game.Id, game))
       return;
 
-    game.OnPromptChanged += args => Export(game, args);
+    game.OnPromptChanged += args =>
+    {
+      if (args.Nonce != args.Snapshot.Nonce || args.Nonce != args.Prompt.Nonce)
+        return;
+
+      _prompts[game.Id] = args.Prompt;
+      Export(game, args.Snapshot, args.Prompt);
+    };
+    game.OnCardChanged += args => ExportCurrent(game, args);
+    game.OnPlayerChanged += args => ExportCurrent(game, args);
+    game.OnZoneChanged += args => ExportCurrent(game, args);
     game.ReadyProcessor();
     logger.LogInformation("Tracking MTGO game {GameId}.", game.Id);
   }
 
-  private void Export(Game game, PromptChangedEventArgs args)
+  private void ExportCurrent(Game game, GameEventArgs args)
+  {
+    if (_prompts.TryGetValue(game.Id, out var prompt)
+        && prompt.Nonce == args.Nonce)
+    {
+      Export(game, args.Snapshot, prompt);
+    }
+  }
+
+  private void Export(Game game, GameStateSnapshot snapshot, GamePrompt prompt)
   {
     try
     {
-      var document = BuildDocument(game, args.Snapshot, args.Prompt);
-      var fullPath = Path.GetFullPath(_outputPath);
-      Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+      if (snapshot.Nonce != prompt.Nonce)
+        return;
 
-      lock (_writeLock)
+      if (!snapshot.Players.TryGetValue(snapshot.PromptedPlayer, out var player)
+          || player.UserId != localUserId)
       {
-        var temporaryPath = fullPath + ".tmp";
-        File.WriteAllText(
-          temporaryPath,
-          JsonSerializer.Serialize(document, s_jsonOptions)
-        );
-        File.Move(temporaryPath, fullPath, overwrite: true);
+        return;
       }
 
+      // Solitaire does not consistently mark its sole player as having priority.
+      if (snapshot.Players.Count > 1 && !player.HasPriority)
+        return;
+
+      var document = BuildDocument(game, snapshot, prompt);
+      lock (_writeLock)
+        AgentStateStore.Write(_outputPath, document);
+
       logger.LogInformation(
-        "Wrote game {GameId} state with {CardCount} visible cards to {Path}.",
-        game.Id,
-        document.Cards.Count,
-        fullPath
+        "Wrote game {GameId} state {Nonce} with {ActionCount} actions.",
+        document.GameId,
+        document.Nonce,
+        document.Actions.Count
       );
     }
     catch (Exception exception)
@@ -83,143 +97,220 @@ internal sealed class GameStateExporter(ILogger logger) : IDisposable
     }
   }
 
-  private static GameDocument BuildDocument(
+  private static AgentState BuildDocument(
     Game game,
     GameStateSnapshot snapshot,
     GamePrompt prompt
   )
   {
-    var promptActions = ReadPromptActions(prompt);
-    var legalTargets = BuildLegalTargetIndex(promptActions);
-    var cards = snapshot.Cards.Values
+    var snapshotCards = snapshot.Cards.Values
       .OrderBy(card => Read(() => card.Zone?.Name) ?? string.Empty)
-      .ThenBy(card => Read(() => card.Id))
-      .Select(card => BuildCard(game, card, promptActions, legalTargets))
+      .ThenBy(card => Read(() => card.OwnerIndex))
+      .ThenBy(card => card.Id)
+      .ToList();
+    var zonePositions = BuildZonePositions(game, snapshotCards);
+    var cards = snapshotCards
+      .Select(card => ProjectCard(card, zonePositions.GetValueOrDefault(card.Id)))
+      .OrderBy(card => card.Zone ?? string.Empty)
+      .ThenBy(card => card.OwnerIndex)
+      .ThenBy(card => card.ZoneIndex ?? int.MaxValue)
+      .ThenBy(card => card.Id)
       .ToList();
 
-    return new GameDocument(
+    var candidates = new List<ActionCandidate>();
+    foreach (var action in ReadPromptActions(prompt))
+    {
+      var source = action is CardAction cardAction
+        ? new ActionSource("card", Read(() => cardAction.Card.Id))
+        : new ActionSource("prompt");
+      candidates.Add(new ActionCandidate(action, source));
+    }
+
+    foreach (var card in cards)
+    {
+      var liveCard = Read(() => game.GetGameCard(card.Id));
+      foreach (var action in Read(() => liveCard?.Actions.ToList()) ?? [])
+        candidates.Add(new ActionCandidate(action, new ActionSource("card", card.Id)));
+    }
+
+    var actions = candidates
+      .Select((candidate, index) => ProjectAction(index, candidate))
+      .ToList();
+    var players = snapshot.Players
+      .OrderBy(entry => entry.Key)
+      .Select(entry => new PlayerState(
+        entry.Key,
+        Read(() => entry.Value.UserId),
+        Read(() => entry.Value.Name) ?? string.Empty,
+        Read(() => entry.Value.Life),
+        Read(() => entry.Value.HasPriority)
+      ))
+      .ToList();
+
+    return new AgentState(
       DateTimeOffset.UtcNow,
       game.Id,
+      snapshot.Nonce,
       snapshot.Timestamp,
       snapshot.TurnNumber,
       snapshot.CurrentPhase.ToString(),
-      new PromptDocument(
-        prompt.Nonce,
-        prompt.Text,
-        prompt.PromptedPlayer,
-        promptActions.Select(ProjectAction).ToList()
-      ),
-      cards
+      new PromptState(prompt.Text, prompt.PromptedPlayer),
+      players,
+      cards,
+      actions
     );
   }
 
-  private static CardDocument BuildCard(
-    Game game,
-    GameCard snapshotCard,
-    IReadOnlyList<GameAction> promptActions,
-    IReadOnlyDictionary<int, List<GameAction>> legalTargets
-  )
+  private static CardState ProjectCard(GameCard card, ZonePosition? position)
   {
-    var liveCard = Read(() => game.GetGameCard(snapshotCard.Id)) ?? snapshotCard;
-    var availableActions = Read(() => liveCard.Actions.ToList()) ?? [];
-    var matchingPromptActions = promptActions
-      .OfType<CardAction>()
-      .Where(action => SameCard(snapshotCard, Read(() => action.Card)))
-      .Cast<GameAction>()
-      .ToList();
+    return new CardState(
+      card.Id,
+      card.SourceId,
+      card.CTN,
+      card.Name,
+      Read(() => card.Zone?.Name),
+      Read(() => card.OwnerIndex),
+      Read(() => card.ControllerIndex),
+      position?.Index,
+      position?.NameOrdinal
+    );
+  }
 
-    var targetActions = new List<GameAction>();
-    AddTargetActions(legalTargets, snapshotCard.Id, targetActions);
-    AddTargetActions(legalTargets, snapshotCard.SourceId, targetActions);
+  private static AgentAction ProjectAction(int id, ActionCandidate candidate)
+  {
+    var action = candidate.Action;
+    IReadOnlyList<TargetSetState>? targets = null;
+    NumberRange? number = null;
+    IReadOnlyList<ActionChoice>? choices = null;
+    IReadOnlyList<int>? order = null;
+    IReadOnlyList<DistributionState>? distribution = null;
 
-    return new CardDocument(
-      snapshotCard.Id,
-      snapshotCard.SourceId,
-      snapshotCard.CTN,
-      snapshotCard.Name,
-      Read(() => snapshotCard.Zone?.Name),
-      Read(() => snapshotCard.OwnerIndex),
-      Read(() => snapshotCard.ControllerIndex),
-      availableActions.Select(ProjectAction).ToList(),
-      matchingPromptActions.Select(ProjectAction).ToList(),
-      targetActions
-        .DistinctBy(ActionKey)
-        .Select(ProjectAction)
+    if (action is CardAction cardAction)
+    {
+      targets = (Read(() => cardAction.Targets.ToList()) ?? [])
+        .Select((targetSet, index) => ProjectTargetSet(index, targetSet))
+        .ToList();
+      if (targets.Count == 0)
+        targets = null;
+    }
+
+    switch (action)
+    {
+      case NumericAction numeric:
+        number = new NumberRange(numeric.Minimum, numeric.Maximum, numeric.Initial);
+        break;
+      case SelectPlayerAction selectPlayer:
+        choices = (Read(() => selectPlayer.AvailablePlayers.ToList()) ?? [])
+          .Select(player => new ActionChoice(player.UserId, player.Name))
+          .ToList();
+        break;
+      case SelectFromListAction selectFromList:
+        choices = (Read(() => selectFromList.AvailableItems.ToList()) ?? [])
+          .Select(item => new ActionChoice(item.Value, item.Name))
+          .ToList();
+        break;
+      case CardSelectorAction cardSelector:
+        choices = (Read(() => cardSelector.Choices) ?? [])
+          .Where(choice => choice.CanChoose)
+          .Select(choice => new ActionChoice(choice.CTN, $"Card {choice.CTN}"))
+          .ToList();
+        break;
+      case OrderingAction ordering:
+        order = (Read(() => ordering.OrderedTargets.ToList()) ?? [])
+          .Select(card => card.Id)
+          .ToList();
+        break;
+      case CombatDamageAssignmentAction damage:
+        distribution = (Read(() => damage.Distributions.ToList()) ?? [])
+          .Select(item => new DistributionState(
+            ProjectTarget(item.Target),
+            item.Minimum,
+            item.Maximum,
+            item.Value
+          ))
+          .ToList();
+        break;
+    }
+
+    return new AgentAction(
+      id,
+      action.Type.ToString(),
+      action.Name,
+      candidate.Source,
+      targets,
+      number,
+      choices,
+      order,
+      distribution
+    );
+  }
+
+  private static TargetSetState ProjectTargetSet(int index, TargetSet targetSet)
+  {
+    return new TargetSetState(
+      index,
+      Read(() => targetSet.Description),
+      Read(() => targetSet.MinimumTargets),
+      Read(() => targetSet.MaximumTargets),
+      (Read(() => targetSet.LegalTargets.ToList()) ?? [])
+        .Select(ProjectTarget)
+        .ToList(),
+      (Read(() => targetSet.CurrentTargets.ToList()) ?? [])
+        .Select(ProjectTarget)
         .ToList()
     );
   }
 
-  private static List<GameAction> ReadPromptActions(GamePrompt prompt)
+  private static GameObjectState ProjectTarget(Targetable target)
   {
-    return Read(() => prompt.Options.Values.SelectMany(actions => actions).ToList())
-      ?? [];
+    var id = Read(() => target.Id);
+    var fallback = Read(() => target.TargetInformation) ?? $"Object {id}";
+    object? value = Read<object>(() => target.ToGameObject());
+    return value switch
+    {
+      GameCard card => new GameObjectState("card", id, card.Name),
+      GamePlayer player => new GameObjectState("player", id, player.Name),
+      _ => new GameObjectState("object", id, fallback)
+    };
   }
 
-  private static Dictionary<int, List<GameAction>> BuildLegalTargetIndex(
-    IReadOnlyList<GameAction> actions
+  private static Dictionary<int, ZonePosition> BuildZonePositions(
+    Game game,
+    IReadOnlyList<GameCard> snapshotCards
   )
   {
-    var index = new Dictionary<int, List<GameAction>>();
-    foreach (var action in actions.OfType<CardAction>())
-    {
-      foreach (var targetSet in Read(() => action.Targets.ToList()) ?? [])
-      {
-        foreach (var target in Read(() => targetSet.LegalTargets.ToList()) ?? [])
-        {
-          var targetId = Read(() => target.Id);
-          if (targetId == 0)
-            continue;
+    var positions = new Dictionary<int, ZonePosition>();
+    var groups = snapshotCards.GroupBy(card => new ZoneKey(
+      Read(() => card.Zone?.Name),
+      Read(() => card.OwnerIndex)
+    ));
 
-          if (!index.TryGetValue(targetId, out var targetActions))
-          {
-            targetActions = [];
-            index[targetId] = targetActions;
-          }
-          targetActions.Add(action);
-        }
+    foreach (var group in groups)
+    {
+      var representative = group
+        .Select(card => Read(() => game.GetGameCard(card.Id)))
+        .FirstOrDefault(card => card?.Zone is not null);
+      var orderedCards = representative is null
+        ? []
+        : Read(() => representative.Zone!.Cards.ToList()) ?? [];
+      var ordinalsByName = new Dictionary<string, int>(StringComparer.Ordinal);
+
+      for (var index = 0; index < orderedCards.Count; index++)
+      {
+        var card = orderedCards[index];
+        var name = Read(() => card.Name) ?? string.Empty;
+        ordinalsByName.TryGetValue(name, out var ordinal);
+        ordinalsByName[name] = ordinal + 1;
+        if (card.Id > 0)
+          positions[card.Id] = new ZonePosition(index, ordinal);
       }
     }
-    return index;
+
+    return positions;
   }
 
-  private static void AddTargetActions(
-    IReadOnlyDictionary<int, List<GameAction>> index,
-    int cardId,
-    List<GameAction> actions
-  )
-  {
-    if (cardId > 0 && index.TryGetValue(cardId, out var matches))
-      actions.AddRange(matches);
-  }
-
-  private static bool SameCard(GameCard card, GameCard? other)
-  {
-    if (other is null)
-      return false;
-
-    return card.Id == other.Id
-      || card.Id == other.SourceId
-      || card.SourceId > 0 && card.SourceId == other.Id
-      || card.SourceId > 0 && card.SourceId == other.SourceId;
-  }
-
-  private static ActionDocument ProjectAction(GameAction action)
-  {
-    var cardAction = action as CardAction;
-    return new ActionDocument(
-      Read(() => action.ActionId),
-      Read(() => action.Timestamp),
-      Read(() => action.Type.ToString()),
-      Read(() => action.Name),
-      Read(() => action.IsDefault),
-      Read(() => action.IsLocal),
-      cardAction is null ? null : Read(() => cardAction.Card.Id),
-      cardAction is null ? null : Read(() => cardAction.RequiresTargets)
-    );
-  }
-
-  private static string ActionKey(GameAction action) =>
-    $"{Read(() => action.Timestamp)}:{Read(() => action.ActionId)}:{Read(() => action.Name)}";
+  private static List<GameAction> ReadPromptActions(GamePrompt prompt) =>
+    Read(() => prompt.Options.Values.SelectMany(actions => actions).ToList()) ?? [];
 
   private static T? Read<T>(Func<T> getter)
   {
@@ -241,44 +332,7 @@ internal sealed class GameStateExporter(ILogger logger) : IDisposable
     _games.Clear();
   }
 
-  private sealed record GameDocument(
-    DateTimeOffset CapturedAtUtc,
-    int GameId,
-    uint StateTimestamp,
-    int Turn,
-    string Phase,
-    PromptDocument Prompt,
-    IReadOnlyList<CardDocument> Cards
-  );
-
-  private sealed record PromptDocument(
-    int Nonce,
-    string Text,
-    byte PromptedPlayer,
-    IReadOnlyList<ActionDocument> Actions
-  );
-
-  private sealed record CardDocument(
-    int Id,
-    int SourceId,
-    int Ctn,
-    string Name,
-    string? Zone,
-    int? OwnerIndex,
-    int? ControllerIndex,
-    IReadOnlyList<ActionDocument> AvailableActions,
-    IReadOnlyList<ActionDocument> PromptActions,
-    IReadOnlyList<ActionDocument> LegalTargetFor
-  );
-
-  private sealed record ActionDocument(
-    int ActionId,
-    uint Timestamp,
-    string? Type,
-    string? Name,
-    bool IsDefault,
-    bool IsLocal,
-    int? CardId,
-    bool? RequiresTargets
-  );
+  private sealed record ActionCandidate(GameAction Action, ActionSource Source);
+  private sealed record ZoneKey(string? Zone, int OwnerIndex);
+  private sealed record ZonePosition(int Index, int NameOrdinal);
 }

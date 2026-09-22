@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project=/workspace/AlphaMTG/AlphaMTG.csproj
+nuget_config=/workspace/AlphaMTG/NuGet.config
 output=/workspace/AlphaMTG/bin/Debug/net10.0-windows
 alphamtg_pid=
 flauinspect_launcher_pid=
@@ -43,7 +44,7 @@ wine reg add 'HKCU\Software\Wine\X11 Driver' \
   /v UseXShm /t REG_SZ /d N /f >/dev/null
 
 echo "=== Building AlphaMTG ==="
-dotnet restore "$project"
+dotnet restore "$project" --configfile "$nuget_config"
 dotnet build "$project" -c Debug --no-restore
 
 # Run the Windows-targeted assembly with the Windows .NET runtime inside Wine.

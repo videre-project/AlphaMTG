@@ -1,5 +1,23 @@
+# Local application configuration
 .env
+
+# .NET build output
 **/bin/
 **/obj/
-AlphaMTG/FlaUIInspector/mtgo-ui.json
-AlphaMTG/FlaUIInspector/mtgo-game.json
+
+# IDE and editor state
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+
+# Test and coverage output
+TestResults/
+coverage.*
+
+# Local AlphaMTG state
+AlphaMTG/mtgo-game.json
+
+# OS-generated files
+.DS_Store

@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
 using AlphaMTG.MTGOAgent;
+using AlphaMTG.MTGOAgent.UIA;
 
 
 namespace AlphaMTG;
@@ -17,8 +18,11 @@ namespace AlphaMTG;
 internal static class Program
 {
   [STAThread]
-  public static async Task Main()
+  public static async Task<int> Main(string[] args)
   {
+    if (args.FirstOrDefault() == "uia")
+      return UIACommand.Run(args[1..]);
+
     using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
     {
       builder
@@ -39,7 +43,10 @@ internal static class Program
       logOn: true
     );
 
-    using var gameStateExporter = new GameStateExporter(logger);
+    using var gameStateExporter = new GameStateExporter(
+      logger,
+      client.CurrentUser.Id
+    );
     gameStateExporter.Start();
 
     logger.LogInformation(
@@ -49,5 +56,6 @@ internal static class Program
     // Keep the process and MTGO client alive until the container is stopped.
     await Task.Delay(Timeout.InfiniteTimeSpan);
     GC.KeepAlive(client);
+    return 0;
   }
 }

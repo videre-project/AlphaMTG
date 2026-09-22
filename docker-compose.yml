@@ -28,8 +28,8 @@ services:
       GDK_BACKEND: x11
       MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
       GALLIUM_DRIVER: llvmpipe
-      # The WPF FlaUInspect window is kept as an optional tool, but the stable
-      # diagnostic path is the CLI: `docker compose exec alphamtg run-flaui-dump`.
+      # The WPF FlaUInspect window is optional. AlphaMTG's UIA diagnostic path
+      # is `docker compose exec alphamtg run-alphamtg-uia snapshot`.
       FLAUINSPECT_AUTOSTART: "0"
       FLAUINSPECT_START_DELAY: "15"
       FLAUINSPECT_MTGO_WAIT_TIMEOUT: "120"

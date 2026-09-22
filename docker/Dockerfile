@@ -65,7 +65,7 @@ RUN curl --fail --location --retry 3 \
 
 COPY --chmod=755 docker/run-alphamtg.sh /usr/local/bin/run-alphamtg
 COPY --chmod=755 docker/run-flauinspect.sh /usr/local/bin/run-flauinspect
-COPY --chmod=755 docker/run-flaui-dump.sh /usr/local/bin/run-flaui-dump
+COPY --chmod=755 docker/run-alphamtg-uia.sh /usr/local/bin/run-alphamtg-uia
 
 USER wine
 WORKDIR /workspace
