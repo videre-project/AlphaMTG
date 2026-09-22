@@ -73,7 +73,12 @@ internal sealed class Inspector : IDisposable
 
     root.Window.SetForeground();
     Thread.Sleep(100);
-    Act(element, target, operation);
+    Act(
+      element,
+      target,
+      operation,
+      root.Window.FrameworkAutomationElement.NativeWindowHandle
+    );
     Thread.Sleep(250);
     return Capture(state);
   }
@@ -245,16 +250,17 @@ internal sealed class Inspector : IDisposable
   private static void Act(
     AutomationElement element,
     Node node,
-    string operation
+    string operation,
+    IntPtr window
   )
   {
     switch (operation)
     {
       case "click":
-        Mouse.LeftClick(ToDrawingPoint(node));
+        Click(window, node, MouseButton.Left);
         break;
       case "rightClick":
-        Mouse.RightClick(ToDrawingPoint(node));
+        Click(window, node, MouseButton.Right);
         break;
       case "invoke":
         element.Patterns.Invoke.Pattern.Invoke();
@@ -262,6 +268,11 @@ internal sealed class Inspector : IDisposable
       default:
         throw new ArgumentException($"Unsupported operation '{operation}'.");
     }
+  }
+
+  private static void Click(IntPtr window, Node node, MouseButton button)
+  {
+    Pointer.Click(window, ToDrawingPoint(node), button);
   }
 
   private static void AnnotateCards(

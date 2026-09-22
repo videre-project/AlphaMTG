@@ -61,11 +61,31 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
       action.Name,
       popupOnly: materializedBy is not null
     );
-    var operation = control.Operations.Contains("invoke", StringComparer.Ordinal)
-      ? "invoke"
-      : "click";
+    var operation = materializedBy is not null
+      ? "click"
+      : control.Operations.Contains("invoke", StringComparer.Ordinal)
+        ? "invoke"
+        : "click";
     _inspector.Perform(snapshot, control, operation, state);
 
+    return Finish(
+      state,
+      action,
+      new Interaction(
+        source,
+        materializedBy,
+        control.Name ?? action.Name,
+        operation
+      )
+    );
+  }
+
+  private ActionExecution Finish(
+    AgentState state,
+    AgentAction action,
+    Interaction interaction
+  )
+  {
     var nextState = WaitForNextState(state);
     var needsInput = action.Targets is not null
       || action.Number is not null
@@ -81,7 +101,7 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
     return new ActionExecution(
       status,
       action,
-      new Interaction(source, materializedBy, control.Name ?? action.Name, operation),
+      interaction,
       nextState
     );
   }
