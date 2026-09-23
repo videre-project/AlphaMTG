@@ -11,6 +11,8 @@ namespace AlphaMTG.MTGOAgent.UIA;
 
 internal sealed class Inspector : IDisposable
 {
+  private static readonly TimeSpan UiChangeTimeout = TimeSpan.FromSeconds(2);
+
   private readonly UIA2Automation _automation = new();
   private readonly HashSet<int> _processIds;
 
@@ -51,11 +53,33 @@ internal sealed class Inspector : IDisposable
     return new Snapshot(Guid.NewGuid().ToString("N"), nodes);
   }
 
+  public int PopupCount
+  {
+    get
+    {
+      var count = 0;
+      foreach (var window in _automation.GetDesktop().FindAllChildren())
+      {
+        if (!_processIds.Contains(window.FrameworkAutomationElement.ProcessId))
+          continue;
+
+        if (window.ClassName == "ContextMenu" && Visible(window))
+          count++;
+        count += window.FindAllDescendants(
+          window.ConditionFactory.ByClassName("ContextMenu")
+        ).Count(Visible);
+      }
+
+      return count;
+    }
+  }
+
   public Snapshot Perform(
     Snapshot snapshot,
     Node target,
     string operation,
-    AgentState state
+    AgentState state,
+    Func<bool>? waitFor = null
   )
   {
     if (!snapshot.Nodes.Contains(target))
@@ -71,15 +95,12 @@ internal sealed class Inspector : IDisposable
     if (!SameIdentity(element, target))
       throw new InvalidOperationException("The UI element is stale.");
 
-    root.Window.SetForeground();
-    Thread.Sleep(100);
-    Act(
-      element,
-      target,
-      operation,
-      root.Window.FrameworkAutomationElement.NativeWindowHandle
-    );
-    Thread.Sleep(250);
+    // Subscribe before dispatching the input. The event is only a wake-up;
+    // waitFor performs the actual, targeted condition check.
+    using var waiter = new UiChangeWaiter(_automation, root.Element);
+    Act(element, target, operation);
+    if (waitFor is not null)
+      waiter.WaitFor(waitFor, UiChangeTimeout);
     return Capture(state);
   }
 
@@ -110,11 +131,7 @@ internal sealed class Inspector : IDisposable
 
   private List<LiveRoot> FindRoots()
   {
-    var candidates = new List<(
-      string Kind,
-      AutomationElement Window,
-      AutomationElement Element
-    )>();
+    var candidates = new List<(string Kind, AutomationElement Element)>();
 
     foreach (var window in _automation.GetDesktop().FindAllChildren())
     {
@@ -129,9 +146,9 @@ internal sealed class Inspector : IDisposable
       foreach (var element in elements.Where(Visible))
       {
         if (element.AutomationId == "DuelSceneWindow")
-          candidates.Add(("duel", window, element));
+          candidates.Add(("duel", element));
         else if (element.ClassName == "ContextMenu")
-          candidates.Add(("popup", window, element));
+          candidates.Add(("popup", element));
       }
 
       if (!hasDuel && descendants.Any(element =>
@@ -140,7 +157,7 @@ internal sealed class Inspector : IDisposable
           StringComparison.OrdinalIgnoreCase
         ) == true))
       {
-        candidates.Add(("zone", window, window));
+        candidates.Add(("zone", window));
       }
     }
 
@@ -152,7 +169,6 @@ internal sealed class Inspector : IDisposable
       .GroupBy(candidate => candidate.Kind)
       .SelectMany(group => group.Select((candidate, index) => new LiveRoot(
         $"{candidate.Kind}:{index}",
-        candidate.Window,
         candidate.Element
       )))
       .ToList();
@@ -249,18 +265,22 @@ internal sealed class Inspector : IDisposable
 
   private static void Act(
     AutomationElement element,
-    Node node,
-    string operation,
-    IntPtr window
+    Node target,
+    string operation
   )
   {
     switch (operation)
     {
       case "click":
-        Click(window, node, MouseButton.Left);
-        break;
       case "rightClick":
-        Click(window, node, MouseButton.Right);
+        var point = ClickPoint(target);
+        Mouse.MoveTo(point);
+        if (Mouse.Position != point)
+          throw new InvalidOperationException($"Cursor did not reach {point}.");
+        if (operation == "click")
+          Mouse.LeftClick();
+        else
+          Mouse.RightClick();
         break;
       case "invoke":
         element.Patterns.Invoke.Pattern.Invoke();
@@ -270,10 +290,12 @@ internal sealed class Inspector : IDisposable
     }
   }
 
-  private static void Click(IntPtr window, Node node, MouseButton button)
-  {
-    Pointer.Click(window, ToDrawingPoint(node), button);
-  }
+  private static System.Drawing.Point ClickPoint(Node target) =>
+    target.ClickPoint is { } point
+      ? new System.Drawing.Point(point.X, point.Y)
+      : throw new InvalidOperationException(
+        $"'{target.Reference}' has no click point."
+      );
 
   private static void AnnotateCards(
     List<Node> nodes,
@@ -302,14 +324,20 @@ internal sealed class Inspector : IDisposable
       .GroupBy(node => (node.Card!.Zone, node.Card.ZoneInstance)))
     {
       var uiCards = uiZone.OrderBy(node => node.Card!.Index).ToList();
+      var orderedUiCards = uiCards
+        .OrderBy(node => node.Card!.Name, StringComparer.OrdinalIgnoreCase)
+        .ToList();
       var matches = modelZones.Where(model =>
         model.Key.Zone == uiZone.Key.Zone
         && !used.Contains(model.Key)
         && model.Cards.Count == uiCards.Count
-        && model.Cards.Select(card => card.Name).SequenceEqual(
-          uiCards.Select(node => node.Card!.Name),
-          StringComparer.OrdinalIgnoreCase
-        )
+        && model.Cards
+          .OrderBy(card => card.Name, StringComparer.OrdinalIgnoreCase)
+          .Select(card => card.Name)
+          .SequenceEqual(
+            orderedUiCards.Select(node => node.Card!.Name),
+            StringComparer.OrdinalIgnoreCase
+          )
       ).ToList();
 
       if (matches.Count != 1)
@@ -317,12 +345,15 @@ internal sealed class Inspector : IDisposable
 
       var match = matches[0];
       used.Add(match.Key);
-      for (var index = 0; index < uiCards.Count; index++)
+      var orderedModelCards = match.Cards
+        .OrderBy(card => card.Name, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+      for (var index = 0; index < orderedUiCards.Count; index++)
       {
-        var nodeIndex = nodes.IndexOf(uiCards[index]);
-        nodes[nodeIndex] = uiCards[index] with
+        var nodeIndex = nodes.IndexOf(orderedUiCards[index]);
+        nodes[nodeIndex] = orderedUiCards[index] with
         {
-          CardId = match.Cards[index].Id
+          CardId = orderedModelCards[index].Id
         };
       }
     }
@@ -350,11 +381,6 @@ internal sealed class Inspector : IDisposable
     && EmptyToNull(element.ClassName) == node.ClassName
     && element.ControlType.ToString() == node.ControlType;
 
-  private static System.Drawing.Point ToDrawingPoint(Node node) =>
-    node.ClickPoint is null
-      ? throw new InvalidOperationException("The UI element has no click point.")
-      : new System.Drawing.Point(node.ClickPoint.X, node.ClickPoint.Y);
-
   private static string Reference(string root, IReadOnlyList<int> path) =>
     path.Count == 0 ? root : $"{root}/{string.Join('.', path)}";
 
@@ -371,7 +397,6 @@ internal sealed class Inspector : IDisposable
 
   private sealed record LiveRoot(
     string Id,
-    AutomationElement Window,
     AutomationElement Element
   );
 

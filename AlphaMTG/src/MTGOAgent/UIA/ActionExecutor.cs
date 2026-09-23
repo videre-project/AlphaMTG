@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 using AlphaMTG.MTGOAgent.UIA.Models;
 
 namespace AlphaMTG.MTGOAgent.UIA;
@@ -41,8 +43,15 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
         snapshot.Nodes.Where(node => node.CardId == cardId),
         $"visible UI card for card {cardId}"
       );
-      snapshot = _inspector.Perform(snapshot, card, "rightClick", state);
       source = $"card:{cardId}";
+      var initialPopupCount = _inspector.PopupCount;
+      snapshot = _inspector.Perform(
+        snapshot,
+        card,
+        "rightClick",
+        state,
+        () => _inspector.PopupCount > initialPopupCount
+      );
       materializedBy = "rightClick";
     }
     else if (action.Source.Type == "prompt")
@@ -61,12 +70,19 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
       action.Name,
       popupOnly: materializedBy is not null
     );
-    var operation = materializedBy is not null
-      ? "click"
-      : control.Operations.Contains("invoke", StringComparer.Ordinal)
-        ? "invoke"
-        : "click";
-    _inspector.Perform(snapshot, control, operation, state);
+    var operation = control.Operations.Contains("invoke", StringComparer.Ordinal)
+      ? "invoke"
+      : "click";
+    var popupCount = _inspector.PopupCount;
+    _inspector.Perform(
+      snapshot,
+      control,
+      operation,
+      state,
+      control.Root.StartsWith("popup:", StringComparison.Ordinal)
+        ? () => _inspector.PopupCount < popupCount
+        : null
+    );
 
     return Finish(
       state,
@@ -217,12 +233,23 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
     };
   }
 
-  private static bool SameLabel(string? actual, string expected) =>
-    string.Equals(
-      actual?.Trim(),
-      expected.Trim(),
+  private static bool SameLabel(string? actual, string expected)
+  {
+    if (actual is null)
+      return false;
+    if (string.Equals(actual.Trim(), expected.Trim(), StringComparison.OrdinalIgnoreCase))
+      return true;
+
+    var withoutSymbols = Regex.Replace(expected, @"\{[^}]+\}", " ");
+    return string.Equals(
+      NormalizeLabel(actual),
+      NormalizeLabel(withoutSymbols),
       StringComparison.OrdinalIgnoreCase
     );
+  }
+
+  private static string NormalizeLabel(string value) =>
+    string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
   private static bool IsAncestor(
     IReadOnlyList<int> ancestor,

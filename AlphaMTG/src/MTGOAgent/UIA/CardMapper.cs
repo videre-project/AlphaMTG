@@ -100,21 +100,11 @@ internal static class CardMapper
       .ThenBy(card => CenterX(card.Element.Bounds))
       .ToList();
 
-    var imageY = cards
-      .Where(card => card.Element.AutomationId?.StartsWith("Image-") == true)
-      .Select(card => CenterY(card.Element.Bounds))
-      .DefaultIfEmpty()
-      .Average();
     var zoneId = instanceCount == 1 ? zone.Name : $"{zone.Name}:{instance}";
 
     for (var index = 0; index < cards.Count; index++)
     {
       var card = cards[index];
-      var clickY = card.Element.AutomationId == "CardType"
-        ? imageY > 0
-          ? (int)Math.Round(imageY)
-          : card.Element.Bounds.Y - 35
-        : CenterY(card.Element.Bounds);
 
       result[card.Element.Key] = new CardMark(
         $"{zoneId}:{index}",
@@ -122,7 +112,7 @@ internal static class CardMapper
         instance,
         index,
         card.Name!,
-        new Point(CenterX(card.Element.Bounds), clickY)
+        new Point(CenterX(card.Element.Bounds), CenterY(card.Element.Bounds))
       );
     }
   }
@@ -132,8 +122,7 @@ internal static class CardMapper
     if (element.AutomationId?.StartsWith("Image-", StringComparison.Ordinal) == true)
       return element.AutomationId["Image-".Length..];
 
-    if (element.AutomationId != "CardType"
-      || element.Name?.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase) != true)
+    if (element.AutomationId != "CardType" || element.Name is null)
       return null;
 
     var separator = Math.Max(

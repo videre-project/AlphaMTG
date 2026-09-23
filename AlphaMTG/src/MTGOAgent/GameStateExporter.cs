@@ -7,7 +7,6 @@ using System.Collections.Concurrent;
 
 using Microsoft.Extensions.Logging;
 
-using MTGOSDK.API.Play;
 using MTGOSDK.API.Play.Games;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.API.Play.Games.Processors.EventArgs;
@@ -26,11 +25,6 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
   {
     GameProcessor.OnNewGame += AttachGame;
     GameProcessor.EnsureHookInitialized();
-    foreach (var match in EventManager.JoinedEvents.OfType<Match>())
-    {
-      if (match.CurrentGame is { } game)
-        AttachGame(game);
-    }
     logger.LogInformation("MTGO game-state exporter is ready.");
   }
 
