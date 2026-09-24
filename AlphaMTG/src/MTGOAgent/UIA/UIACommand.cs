@@ -26,10 +26,17 @@ internal static class UIACommand
         using var executor = new ActionExecutor(statePath);
         var targetSet = OptionalInt(args, "--target-set");
         var targetId = OptionalInt(args, "--target-id");
+        var choiceId = OptionalInt(args, "--choice-id");
         if (targetSet.HasValue != targetId.HasValue)
         {
           throw new ArgumentException(
             "--target-set and --target-id must be supplied together."
+          );
+        }
+        if (targetSet.HasValue && choiceId.HasValue)
+        {
+          throw new ArgumentException(
+            "A target and --choice-id cannot be supplied together."
           );
         }
         result = executor.Execute(
@@ -38,13 +45,15 @@ internal static class UIACommand
           RequiredInt(args, "--action-id"),
           targetSet.HasValue
             ? new TargetSelection(targetSet.Value, targetId!.Value)
-            : null
+            : null,
+          choiceId
         );
       }
       else
       {
         throw new ArgumentException(
-          "Use 'uia snapshot' or 'uia execute-action'."
+          "Use 'uia snapshot' or 'uia execute-action "
+            + "[--target-set N --target-id N | --choice-id N]'."
         );
       }
 

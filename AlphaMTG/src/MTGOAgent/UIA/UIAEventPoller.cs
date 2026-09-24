@@ -9,19 +9,20 @@ namespace AlphaMTG.MTGOAgent.UIA;
 
 /// <summary>
 /// Signals when MTGO's UIA tree reports a relevant UI transition.
-///
+/// </summary>
+/// <remarks>
 /// UIA events are used as wake-up hints. The caller still checks the actual
 /// condition because a provider can report an event before a transient child
 /// is fully populated, or can omit an event entirely under Wine.
-/// </summary>
-internal sealed class UiChangeWaiter : IDisposable
+/// </remarks>
+internal sealed class UIAEventPoller : IDisposable
 {
   private const int PollMilliseconds = 25;
 
   private readonly ManualResetEventSlim _changed = new();
   private readonly List<IDisposable> _subscriptions = [];
 
-  public UiChangeWaiter(AutomationBase automation, AutomationElement element)
+  public UIAEventPoller(AutomationBase automation, AutomationElement element)
   {
     var desktop = automation.GetDesktop();
     var events = automation.EventLibrary.Element;
@@ -65,6 +66,14 @@ internal sealed class UiChangeWaiter : IDisposable
       properties.Name,
       properties.BoundingRectangle
     ));
+  }
+
+  public bool WaitForChange(TimeSpan timeout)
+  {
+    bool changed = _changed.Wait(timeout);
+    if (changed)
+      _changed.Reset();
+    return changed;
   }
 
   public bool WaitFor(Func<bool> probe, TimeSpan timeout)

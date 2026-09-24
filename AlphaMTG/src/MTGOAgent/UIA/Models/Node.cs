@@ -13,5 +13,6 @@ internal sealed record Node(
   Point? ClickPoint,
   IReadOnlyList<string> Operations,
   CardView? Card,
-  int? CardId
+  int? CardId,
+  PlayerView? Player
 );

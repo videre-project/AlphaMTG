@@ -7,6 +7,8 @@ using System.Collections.Concurrent;
 
 using Microsoft.Extensions.Logging;
 
+using AlphaMTG.MTGOAgent.UIA;
+
 using MTGOSDK.API.Play.Games;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.API.Play.Games.Processors.EventArgs;
@@ -18,13 +20,17 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 {
   private readonly ConcurrentDictionary<int, Game> _games = new();
   private readonly ConcurrentDictionary<int, GamePrompt> _prompts = new();
+  private readonly ConcurrentDictionary<int, GameStateSnapshot> _snapshots = new();
   private readonly object _writeLock = new();
+  private readonly ConcurrentDictionary<int, string> _lastUiRefreshes = new();
   private readonly string _outputPath = AgentStateStore.DefaultPath;
+  private UIActivityMonitor? _uiMonitor;
 
   public void Start()
   {
     GameProcessor.OnNewGame += AttachGame;
     GameProcessor.EnsureHookInitialized();
+    _uiMonitor = new UIActivityMonitor(logger, RefreshGames);
     logger.LogInformation("MTGO game-state exporter is ready.");
   }
 
@@ -39,6 +45,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         return;
 
       _prompts[game.Id] = args.Prompt;
+      _snapshots[game.Id] = args.Snapshot;
       Export(game, args.Snapshot, args.Prompt);
     };
     game.OnCardChanged += args => ExportCurrent(game, args);
@@ -50,6 +57,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 
   private void ExportCurrent(Game game, GameEventArgs args)
   {
+    _snapshots[game.Id] = args.Snapshot;
     if (_prompts.TryGetValue(game.Id, out var prompt)
         && prompt.Nonce == args.Nonce)
     {
@@ -57,14 +65,66 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     }
   }
 
-  private void Export(Game game, GameStateSnapshot snapshot, GamePrompt prompt)
+  private void RefreshGames()
+  {
+    foreach (Game game in _games.Values)
+      Refresh(game);
+  }
+
+  private void Refresh(Game game)
   {
     try
     {
-      if (snapshot.Nonce != prompt.Nonce)
+      // A UI transition can precede the SDK's set_Prompt/gameplay-status
+      // callbacks. Drain both queues before deciding that the model is stale.
+      game.WaitForPendingProcessing(TimeSpan.FromSeconds(1));
+
+      GamePrompt? prompt = Read(() => game.Prompt);
+      if (prompt is null)
         return;
 
-      if (!snapshot.Players.TryGetValue(snapshot.PromptedPlayer, out var player)
+      if (!_snapshots.TryGetValue(game.Id, out GameStateSnapshot? snapshot)
+          || snapshot is null)
+      {
+        return;
+      }
+
+      string signature = $"{prompt.Nonce}:{prompt.Text}";
+      if (_lastUiRefreshes.TryGetValue(game.Id, out string? previous)
+          && previous == signature)
+      {
+        return;
+      }
+
+      _lastUiRefreshes[game.Id] = signature;
+      int? nonceOverride = snapshot.Nonce == prompt.Nonce
+        ? null
+        : prompt.Nonce;
+      Export(game, snapshot, prompt, nonceOverride);
+    }
+    catch (Exception exception)
+    {
+      logger.LogWarning(
+        exception,
+        "Failed to refresh MTGO game {GameId} after a UI change.",
+        game.Id);
+    }
+  }
+
+  private void Export(
+    Game game,
+    GameStateSnapshot snapshot,
+    GamePrompt prompt,
+    int? nonceOverride = null)
+  {
+    try
+    {
+      if (snapshot.Nonce != prompt.Nonce && nonceOverride is null)
+        return;
+
+      if (!snapshot.Players.TryGetValue(
+            prompt.PromptedPlayer,
+            out var player)
           || player.UserId != localUserId)
       {
         return;
@@ -74,7 +134,11 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       if (snapshot.Players.Count > 1 && !player.HasPriority)
         return;
 
-      var document = BuildDocument(game, snapshot, prompt);
+      var document = BuildDocument(
+        game,
+        snapshot,
+        prompt,
+        nonceOverride);
       lock (_writeLock)
         AgentStateStore.Write(_outputPath, document);
 
@@ -94,8 +158,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
   private static AgentState BuildDocument(
     Game game,
     GameStateSnapshot snapshot,
-    GamePrompt prompt
-  )
+    GamePrompt prompt,
+    int? nonceOverride = null)
   {
     var snapshotCards = snapshot.Cards.Values
       .OrderBy(card => Read(() => card.Zone?.Name) ?? string.Empty)
@@ -144,7 +208,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     return new AgentState(
       DateTimeOffset.UtcNow,
       game.Id,
-      snapshot.Nonce,
+      nonceOverride ?? snapshot.Nonce,
       snapshot.Timestamp,
       snapshot.TurnNumber,
       snapshot.CurrentPhase.ToString(),
@@ -320,6 +384,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 
   public void Dispose()
   {
+    _uiMonitor?.Dispose();
+    _uiMonitor = null;
     GameProcessor.OnNewGame -= AttachGame;
     foreach (var game in _games.Values)
       game.ClearEvents();

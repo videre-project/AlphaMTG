@@ -5,12 +5,13 @@ namespace AlphaMTG.MTGOAgent.UIA;
 internal static class CardMapper
 {
   public static Dictionary<string, CardMark> Find(
-    IReadOnlyList<Inspector.Observed> elements
+    IReadOnlyList<Inspector.Observed> elements,
+    IReadOnlyList<CardState> modelCards
   )
   {
     var cards = elements
       .Where(element => element.Visible)
-      .Select(element => new Candidate(element, CardName(element)))
+      .Select(element => new Candidate(element, CardName(element, modelCards)))
       .Where(candidate => candidate.Name is not null)
       .GroupBy(candidate => (candidate.Name, candidate.Element.Bounds))
       .Select(group => group.First())
@@ -117,20 +118,50 @@ internal static class CardMapper
     }
   }
 
-  private static string? CardName(Inspector.Observed element)
+  private static string? CardName(
+    Inspector.Observed element,
+    IReadOnlyList<CardState> modelCards
+  )
   {
     if (element.AutomationId?.StartsWith("Image-", StringComparison.Ordinal) == true)
       return element.AutomationId["Image-".Length..];
 
-    if (element.AutomationId != "CardType" || element.Name is null)
+    if (element.AutomationId == "CardType" && element.Name is not null)
+    {
+      var separator = Math.Max(
+        element.Name.LastIndexOf(" - ", StringComparison.Ordinal),
+        element.Name.LastIndexOf(" — ", StringComparison.Ordinal)
+      );
+      if (separator >= 0)
+        return element.Name[(separator + 3)..];
+    }
+
+    // Some cards expose only a rules-text TextBlock in the hand instead of
+    // an Image-<name> element. Match that text against the model hand names
+    // so the semantic card ID can still be attached to the visible slot.
+    if (element.AutomationId is not null || element.Name is null)
       return null;
 
-    var separator = Math.Max(
-      element.Name.LastIndexOf(" - ", StringComparison.Ordinal),
-      element.Name.LastIndexOf(" — ", StringComparison.Ordinal)
-    );
-    return separator < 0 ? null : element.Name[(separator + 3)..];
+    return modelCards
+      .Where(card => string.Equals(
+        NormalizeZone(card.Zone ?? string.Empty),
+        "hand",
+        StringComparison.OrdinalIgnoreCase))
+      .Select(card => (Name: card.Name, Token: NameToken(card.Name)))
+      .Where(candidate => candidate.Token.Length >= 4)
+      .Where(candidate => element.Name.Contains(
+        candidate.Token,
+        StringComparison.OrdinalIgnoreCase))
+      .OrderByDescending(candidate => candidate.Token.Length)
+      .Select(candidate => candidate.Name)
+      .FirstOrDefault();
   }
+
+  private static string NameToken(string name) =>
+    name.Split(
+      new[] { ',', ' ', '\t', '\r', '\n' },
+      StringSplitOptions.RemoveEmptyEntries)
+      .FirstOrDefault() ?? string.Empty;
 
   internal static string NormalizeZone(string value)
   {

@@ -12,7 +12,8 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
     int gameId,
     int nonce,
     int actionId,
-    TargetSelection? target = null
+    TargetSelection? target = null,
+    int? choiceId = null
   )
   {
     var state = AgentStateStore.Read(statePath);
@@ -28,8 +29,14 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
     var action = state.Actions.SingleOrDefault(action => action.Id == actionId)
       ?? throw new ArgumentException($"Unknown action {actionId}.");
 
+    if (target is not null && choiceId is not null)
+      throw new ArgumentException("A target and a choice cannot be supplied together.");
     if (target is not null)
       return SelectTarget(state, action, target);
+    if (choiceId is not null)
+      return SelectChoice(state, action, choiceId.Value);
+    if (action.Choices is not null)
+      throw new ArgumentException("This action requires --choice-id.");
 
     var snapshot = _inspector.Capture(state);
     string source;
@@ -45,14 +52,17 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
       );
       source = $"card:{cardId}";
       var initialPopupCount = _inspector.PopupCount;
-      snapshot = _inspector.Perform(
-        snapshot,
-        card,
-        "rightClick",
-        state,
-        () => _inspector.PopupCount > initialPopupCount
-      );
-      materializedBy = "rightClick";
+      if (initialPopupCount == 0)
+      {
+        snapshot = _inspector.Perform(
+          snapshot,
+          card,
+          "rightClick",
+          state,
+          () => _inspector.PopupCount > initialPopupCount
+        );
+        materializedBy = "rightClick";
+      }
     }
     else if (action.Source.Type == "prompt")
     {
@@ -118,6 +128,45 @@ internal sealed class ActionExecutor(string statePath) : IDisposable
       status,
       action,
       interaction,
+      nextState
+    );
+  }
+
+  private ActionExecution SelectChoice(
+    AgentState state,
+    AgentAction action,
+    int choiceId
+  )
+  {
+    if (action.Type != "ChoosePlayer" || action.Choices is null)
+      throw new NotSupportedException(
+        $"UI mapping for {action.Type} choices has not been implemented."
+      );
+    var choice = action.Choices.SingleOrDefault(item => item.Id == choiceId)
+      ?? throw new InvalidOperationException(
+        $"Choice {choiceId} is not available for action {action.Id}."
+      );
+
+    var snapshot = _inspector.Capture(state);
+    var control = ExactlyOne(
+      snapshot.Nodes.Where(node =>
+        node.Player?.Id == choiceId
+        && node.IsEnabled),
+      $"UI player control for choice {choiceId}"
+    );
+    var operation = control.Operations.Contains("invoke", StringComparer.Ordinal)
+      ? "invoke"
+      : "click";
+    _inspector.Perform(snapshot, control, operation, state);
+    var nextState = WaitForNextState(state);
+    var status = nextState.Nonce == state.Nonce
+      ? "awaitingChoice"
+      : "completed";
+
+    return new ActionExecution(
+      status,
+      action,
+      new Interaction($"player:{choiceId}", null, choice.Name, operation),
       nextState
     );
   }

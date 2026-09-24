@@ -39,9 +39,14 @@ internal sealed class Inspector : IDisposable
   public Snapshot Capture(AgentState state)
   {
     var observed = Observe();
-    var cards = CardMapper.Find(observed);
+    var cards = CardMapper.Find(observed, state.Cards);
+    var players = PlayerMapper.Find(observed, state.Players);
     var nodes = observed
-      .Select(item => Describe(item, cards.GetValueOrDefault(item.Key)))
+      .Select(item => Describe(
+        item,
+        cards.GetValueOrDefault(item.Key),
+        players.GetValueOrDefault(item.Key)
+      ))
       .Where(node => node is not null)
       .Cast<Node>()
       .DistinctBy(node => node.Card is null
@@ -63,11 +68,11 @@ internal sealed class Inspector : IDisposable
         if (!_processIds.Contains(window.FrameworkAutomationElement.ProcessId))
           continue;
 
-        if (window.ClassName == "ContextMenu" && Visible(window))
+        if (window.ClassName == "ContextMenu")
           count++;
         count += window.FindAllDescendants(
           window.ConditionFactory.ByClassName("ContextMenu")
-        ).Count(Visible);
+        ).Count();
       }
 
       return count;
@@ -97,10 +102,11 @@ internal sealed class Inspector : IDisposable
 
     // Subscribe before dispatching the input. The event is only a wake-up;
     // waitFor performs the actual, targeted condition check.
-    using var waiter = new UiChangeWaiter(_automation, root.Element);
+    using var poller = new UIAEventPoller(_automation, root.Element);
     Act(element, target, operation);
     if (waitFor is not null)
-      waiter.WaitFor(waitFor, UiChangeTimeout);
+      poller.WaitFor(waitFor, UiChangeTimeout);
+
     return Capture(state);
   }
 
@@ -140,25 +146,39 @@ internal sealed class Inspector : IDisposable
 
       var descendants = window.FindAllDescendants();
       IEnumerable<AutomationElement> elements = [window, .. descendants];
-      var hasDuel = elements.Any(element =>
-        element.AutomationId == "DuelSceneWindow");
+      AutomationElement? gameDetails = elements.FirstOrDefault(element =>
+        element.AutomationId == "GameDetailsWindow");
 
-      foreach (var element in elements.Where(Visible))
+      if (gameDetails is not null)
       {
-        if (element.AutomationId == "DuelSceneWindow")
-          candidates.Add(("duel", element));
-        else if (element.ClassName == "ContextMenu")
-          candidates.Add(("popup", element));
+        candidates.Add(("game", gameDetails));
+      }
+      else
+      {
+        var duelElements = elements
+          .Where(element => element.AutomationId == "DuelSceneWindow")
+          .ToList();
+        candidates.AddRange(
+          duelElements
+            .Where(Visible)
+            .Select(element => ("duel", element)));
+
+        if (duelElements.Count == 0 && descendants.Any(element =>
+          element.AutomationId?.StartsWith(
+            "TemporaryZone_",
+            StringComparison.OrdinalIgnoreCase
+          ) == true))
+        {
+          candidates.Add(("zone", window));
+        }
       }
 
-      if (!hasDuel && descendants.Any(element =>
-        element.AutomationId?.StartsWith(
-          "TemporaryZone_",
-          StringComparison.OrdinalIgnoreCase
-        ) == true))
-      {
-        candidates.Add(("zone", window));
-      }
+      // Context menus can be positioned below the game window. Keep their
+      // UIA controls available for Invoke even when they are offscreen.
+      candidates.AddRange(
+        elements
+          .Where(element => element.ClassName == "ContextMenu")
+          .Select(element => ("popup", element)));
     }
 
     return candidates
@@ -190,30 +210,36 @@ internal sealed class Inspector : IDisposable
       EmptyToNull(element.ClassName),
       element.ControlType,
       element.IsEnabled,
-      !element.IsOffscreen && rectangle.Width > 0 && rectangle.Height > 0,
+      !IsOffscreen(element) && rectangle.Width > 0 && rectangle.Height > 0,
       new Bounds(rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height)
     );
   }
 
-  private static Node? Describe(Observed item, CardMark? card)
+  private static Node? Describe(
+    Observed item,
+    CardMark? card,
+    PlayerView? player
+  )
   {
-    if (!item.Visible)
+    bool isPopup = item.Root.StartsWith("popup:", StringComparison.Ordinal);
+    if (!item.Visible && !isPopup)
       return null;
 
     var operations = PatternOperations(item.Element);
-    var pointer = item.Path.Count > 0
+    var pointer = item.Visible
+      && item.Path.Count > 0
       && item.IsEnabled
-      && (card is not null || operations.Count > 0);
+      && (card is not null || player is not null || operations.Count > 0);
     if (pointer)
     {
       operations.Add("click");
       operations.Add("rightClick");
     }
 
-    var popupLabel = item.Root.StartsWith("popup:", StringComparison.Ordinal)
-      && item.Name is not null;
+    var popupLabel = isPopup && item.Name is not null;
     if (item.Path.Count > 0
         && card is null
+        && player is null
         && operations.Count == 0
         && !popupLabel)
     {
@@ -242,7 +268,8 @@ internal sealed class Inspector : IDisposable
       card is null
         ? null
         : new CardView(card.Zone, card.ZoneInstance, card.Index, card.Name),
-      null
+      null,
+      player
     );
   }
 
@@ -384,10 +411,24 @@ internal sealed class Inspector : IDisposable
   private static string Reference(string root, IReadOnlyList<int> path) =>
     path.Count == 0 ? root : $"{root}/{string.Join('.', path)}";
 
+  private static bool IsOffscreen(AutomationElement element)
+  {
+    try
+    {
+      return element.IsOffscreen;
+    }
+    catch
+    {
+      return false;
+    }
+  }
+
   private static bool Visible(AutomationElement element)
   {
     var rectangle = element.BoundingRectangle;
-    return !element.IsOffscreen && rectangle.Width > 0 && rectangle.Height > 0;
+    return !IsOffscreen(element)
+      && rectangle.Width > 0
+      && rectangle.Height > 0;
   }
 
   private static string? EmptyToNull(string? value) =>

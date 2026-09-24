@@ -14,9 +14,9 @@
     <PackageReference Include="FlaUI.Core" Version="5.0.0" />
     <PackageReference Include="FlaUI.UIA2" Version="5.0.0" />
     <PackageReference Include="MTGOSDK"
-                      Version="1.5.2.20260629" />
+                      Version="1.7.1.20260924" />
     <PackageReference Include="MTGOSDK.Win32"
-                      Version="1.5.2.20260629" />
+                      Version="1.7.1.20260924" />
     <PackageReference Include="Microsoft.Extensions.Logging"
                       Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console"
