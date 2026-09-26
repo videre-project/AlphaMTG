@@ -5,30 +5,13 @@ project=/workspace/AlphaMTG/AlphaMTG.csproj
 nuget_config=/workspace/AlphaMTG/NuGet.config
 output=/workspace/AlphaMTG/bin/Debug/net10.0-windows
 alphamtg_pid=
-flauinspect_launcher_pid=
 
 cleanup() {
-  for pid in "$flauinspect_launcher_pid" "$alphamtg_pid"; do
-    if [[ -n "$pid" ]]; then
-      kill "$pid" 2>/dev/null || true
-    fi
-  done
+  if [[ -n "$alphamtg_pid" ]]; then
+    kill "$alphamtg_pid" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
-
-wait_for_mtgo() {
-  local timeout=${FLAUINSPECT_MTGO_WAIT_TIMEOUT:-120}
-
-  echo "Waiting for MTGO before starting FlaUIInspect..."
-  for ((seconds = 0; seconds < timeout; seconds++)); do
-    if ps -eo args= | grep -q '[M]TGO.exe'; then
-      return 0
-    fi
-    sleep 1
-  done
-
-  echo "MTGO did not appear within ${timeout}s; starting FlaUIInspect anyway."
-}
 
 # Keep the current directory at the workspace root so BotClient's
 # DotEnv.LoadFile() resolves /workspace/.env from the bind mount.
@@ -44,7 +27,11 @@ wine reg add 'HKCU\Software\Wine\X11 Driver' \
   /v UseXShm /t REG_SZ /d N /f >/dev/null
 
 echo "=== Building AlphaMTG ==="
-dotnet restore "$project" --configfile "$nuget_config"
+# The local SDK feed can contain a rebuilt package with the same MinVer
+# version. Clear restore metadata so NuGet does not reuse a stale package
+# hash from the previous container iteration.
+rm -rf "$(dirname "$project")/obj"
+dotnet restore "$project" --configfile "$nuget_config" --force-evaluate --no-cache
 dotnet build "$project" -c Debug --no-restore
 
 # Run the Windows-targeted assembly with the Windows .NET runtime inside Wine.
@@ -59,16 +46,5 @@ export DOTNET_ROOT='Z:\home\wine\windows-dotnet'
 echo "=== Starting AlphaMTG ==="
 wine "$win_dotnet" "$win_dll" &
 alphamtg_pid=$!
-
-if [[ "${FLAUINSPECT_AUTOSTART:-1}" =~ ^(1|true|yes|on)$ ]]; then
-  (
-    wait_for_mtgo
-    sleep "${FLAUINSPECT_START_DELAY:-10}"
-    if kill -0 "$alphamtg_pid" 2>/dev/null; then
-      /usr/local/bin/run-flauinspect
-    fi
-  ) &
-  flauinspect_launcher_pid=$!
-fi
 
 wait "$alphamtg_pid"

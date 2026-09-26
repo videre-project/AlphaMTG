@@ -18,6 +18,7 @@ coverage.*
 
 # Local AlphaMTG state
 AlphaMTG/mtgo-game.json
+AlphaMTG/native-ui.json
 
 # OS-generated files
 .DS_Store

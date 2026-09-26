@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Drive MTGO through its UI Automation tree.
+#
+# Execution only. The state this consumes is written natively by the
+# in-process game-state exporter; this command clicks and nothing more.
 set -euo pipefail
 
 export PATH="/opt/wine/bin:${PATH}"

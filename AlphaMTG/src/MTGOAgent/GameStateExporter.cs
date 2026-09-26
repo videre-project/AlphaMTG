@@ -4,14 +4,15 @@
 **/
 
 using System.Collections.Concurrent;
+using System.IO;
+using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
-
-using AlphaMTG.MTGOAgent.UIA;
 
 using MTGOSDK.API.Play.Games;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.API.Play.Games.Processors.EventArgs;
+using MTGOSDK.Core.Reflection;
 
 
 namespace AlphaMTG.MTGOAgent;
@@ -23,14 +24,16 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
   private readonly ConcurrentDictionary<int, GameStateSnapshot> _snapshots = new();
   private readonly object _writeLock = new();
   private readonly ConcurrentDictionary<int, string> _lastUiRefreshes = new();
+  private readonly ConcurrentDictionary<int, byte> _refreshQueued = new();
   private readonly string _outputPath = AgentStateStore.DefaultPath;
-  private UIActivityMonitor? _uiMonitor;
+  private readonly string _nativeUiOutputPath =
+    Environment.GetEnvironmentVariable("ALPHAMTG_NATIVE_UI_STATE_PATH")
+    ?? Path.Combine("AlphaMTG", "native-ui.json");
 
   public void Start()
   {
     GameProcessor.OnNewGame += AttachGame;
     GameProcessor.EnsureHookInitialized();
-    _uiMonitor = new UIActivityMonitor(logger, RefreshGames);
     logger.LogInformation("MTGO game-state exporter is ready.");
   }
 
@@ -39,20 +42,38 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     if (!_games.TryAdd(game.Id, game))
       return;
 
-    game.OnPromptChanged += args =>
+    try
     {
-      if (args.Nonce != args.Snapshot.Nonce || args.Nonce != args.Prompt.Nonce)
-        return;
+      CardActionRegistry registry = game.CardActions;
 
-      _prompts[game.Id] = args.Prompt;
-      _snapshots[game.Id] = args.Snapshot;
-      Export(game, args.Snapshot, args.Prompt);
-    };
-    game.OnCardChanged += args => ExportCurrent(game, args);
-    game.OnPlayerChanged += args => ExportCurrent(game, args);
-    game.OnZoneChanged += args => ExportCurrent(game, args);
-    game.ReadyProcessor();
-    logger.LogInformation("Tracking MTGO game {GameId}.", game.Id);
+      // The SDK registry is attached before the built-in processor events so
+      // the exporter has an authoritative action view for each snapshot.
+      game.CardActionsChanged += _ => ScheduleRefresh(game);
+
+      game.OnPromptChanged += args =>
+      {
+        if (args.Nonce != args.Snapshot.Nonce || args.Nonce != args.Prompt.Nonce)
+          return;
+
+        _prompts[game.Id] = args.Prompt;
+        _snapshots[game.Id] = args.Snapshot;
+        Export(game, args.Snapshot, args.Prompt, registry);
+      };
+      game.OnCardChanged += args => ExportCurrent(game, args);
+      game.OnPlayerChanged += args => ExportCurrent(game, args);
+      game.OnZoneChanged += args => ExportCurrent(game, args);
+      game.ReadyProcessor();
+      logger.LogInformation(
+        "Tracking MTGO game {GameId} with native action registry version {Version}.",
+        game.Id,
+        registry.Version);
+    }
+    catch
+    {
+      game.ClearEvents();
+      _games.TryRemove(game.Id, out _);
+      throw;
+    }
   }
 
   private void ExportCurrent(Game game, GameEventArgs args)
@@ -61,7 +82,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     if (_prompts.TryGetValue(game.Id, out var prompt)
         && prompt.Nonce == args.Nonce)
     {
-      Export(game, args.Snapshot, prompt);
+      Export(game, args.Snapshot, prompt, game.CardActions);
     }
   }
 
@@ -69,6 +90,28 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
   {
     foreach (Game game in _games.Values)
       Refresh(game);
+  }
+
+  private void ScheduleRefresh(Game game)
+  {
+    // Registry notifications are delivered from the SDK remoting/processor
+    // thread. Never call WaitForPendingProcessing synchronously from that
+    // thread, because the drain task may be waiting on this callback.
+    if (!_refreshQueued.TryAdd(game.Id, 0))
+      return;
+
+    _ = Task.Run(() =>
+    {
+      try
+      {
+        if (_games.ContainsKey(game.Id))
+          Refresh(game);
+      }
+      finally
+      {
+        _refreshQueued.TryRemove(game.Id, out _);
+      }
+    });
   }
 
   private void Refresh(Game game)
@@ -89,7 +132,16 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         return;
       }
 
-      string signature = $"{prompt.Nonce}:{prompt.Text}";
+      CardActionRegistry? registry = game.CardActions;
+      // The native/UI dump is independent of the server snapshot. In
+      // particular, a CollectionChanged notification can be the only state
+      // transition after a local menu or mode interaction.
+      WriteNativeUiSnapshot(game, snapshot, prompt, registry);
+
+      // Include the registry version so an action-only collection mutation
+      // produces a fresh export even when the prompt text and nonce are
+      // unchanged.
+      string signature = $"{prompt.Nonce}:{prompt.Text}:{registry?.Version ?? 0}";
       if (_lastUiRefreshes.TryGetValue(game.Id, out string? previous)
           && previous == signature)
       {
@@ -100,13 +152,13 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       int? nonceOverride = snapshot.Nonce == prompt.Nonce
         ? null
         : prompt.Nonce;
-      Export(game, snapshot, prompt, nonceOverride);
+      Export(game, snapshot, prompt, registry, nonceOverride);
     }
     catch (Exception exception)
     {
       logger.LogWarning(
         exception,
-        "Failed to refresh MTGO game {GameId} after a UI change.",
+        "Failed to refresh MTGO game {GameId} after a UI or native-action change.",
         game.Id);
     }
   }
@@ -115,10 +167,15 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     Game game,
     GameStateSnapshot snapshot,
     GamePrompt prompt,
+    CardActionRegistry? registry,
     int? nonceOverride = null)
   {
     try
     {
+      // Always retain a native/UI view, including when it cannot yet be
+      // correlated with a new server snapshot or belongs to another player.
+      WriteNativeUiSnapshot(game, snapshot, prompt, registry);
+
       if (snapshot.Nonce != prompt.Nonce && nonceOverride is null)
         return;
 
@@ -138,6 +195,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         game,
         snapshot,
         prompt,
+        registry,
         nonceOverride);
       lock (_writeLock)
         AgentStateStore.Write(_outputPath, document);
@@ -159,6 +217,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     Game game,
     GameStateSnapshot snapshot,
     GamePrompt prompt,
+    CardActionRegistry? registry,
     int? nonceOverride = null)
   {
     var snapshotCards = snapshot.Cards.Values
@@ -178,6 +237,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     var candidates = new List<ActionCandidate>();
     foreach (var action in ReadPromptActions(prompt))
     {
+      if (action is null)
+        continue;
       var source = action is CardAction cardAction
         ? new ActionSource("card", Read(() => cardAction.Card.Id))
         : new ActionSource("prompt");
@@ -186,14 +247,23 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 
     foreach (var card in cards)
     {
-      var liveCard = Read(() => game.GetGameCard(card.Id));
-      foreach (var action in Read(() => liveCard?.Actions.ToList()) ?? [])
-        candidates.Add(new ActionCandidate(action, new ActionSource("card", card.Id)));
+      // The registry is the authoritative live action source. It retains
+      // wrappers around the native action objects and is updated by each
+      // card's collection event; do not rescan every live card here.
+      foreach (var action in registry?.GetActions(card.Id, card.SourceId) ?? [])
+      {
+        if (action is not null)
+          candidates.Add(new ActionCandidate(action, new ActionSource("card", card.Id)));
+      }
     }
 
-    var actions = candidates
-      .Select((candidate, index) => ProjectAction(index, candidate))
-      .ToList();
+    var actions = new List<AgentAction>();
+    foreach (var candidate in candidates)
+    {
+      var projected = TryProjectAction(actions.Count, candidate);
+      if (projected is not null)
+        actions.Add(projected);
+    }
     var players = snapshot.Players
       .OrderBy(entry => entry.Key)
       .Select(entry => new PlayerState(
@@ -219,6 +289,91 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     );
   }
 
+  private void WriteNativeUiSnapshot(
+    Game game,
+    GameStateSnapshot snapshot,
+    GamePrompt prompt,
+    CardActionRegistry? registry)
+  {
+    try
+    {
+      var cards = snapshot.Cards.Values
+        .OrderBy(card => Read(() => card.Zone?.Name) ?? string.Empty)
+        .ThenBy(card => Read(() => card.Id))
+        .Select(card => ProjectNativeCard(card, registry))
+        .ToList();
+      var document = new NativeUiSnapshot(
+        DateTimeOffset.UtcNow,
+        game.Id,
+        snapshot.Nonce,
+        prompt.Nonce,
+        Read(() => prompt.Text),
+        registry?.Version ?? 0,
+        cards);
+
+      lock (_writeLock)
+        AgentStateStore.Write(_nativeUiOutputPath, document);
+    }
+    catch (Exception exception)
+    {
+      logger.LogWarning(
+        exception,
+        "Failed to write native UI snapshot for MTGO game {GameId}.",
+        game.Id);
+    }
+  }
+
+  private static NativeCardSnapshot ProjectNativeCard(
+    GameCard card,
+    CardActionRegistry? registry)
+  {
+    var actions = registry?.GetActions(card.Id, card.SourceId) ?? [];
+    var selectable = registry?.GetSelectable(card.Id, card.SourceId);
+    return new NativeCardSnapshot(
+      card.Id,
+      card.SourceId,
+      Read(() => card.Name),
+      Read(() => card.Zone?.Name),
+      Read(() => card.IsAttacking),
+      Read(() => card.IsTapped),
+      selectable?.IsSelectable ?? false,
+      selectable?.IsTargetable ?? false,
+      selectable?.IsTargeted ?? false,
+      selectable?.Position?.X,
+      selectable?.Position?.Y,
+      actions
+        .Select((action, index) => ProjectNativeAction(action, index))
+        .ToList());
+  }
+
+  private static NativeActionSnapshot ProjectNativeAction(
+    CardAction action,
+    int index)
+  {
+    dynamic? rawAction = null;
+    try
+    {
+      rawAction = DLRWrapper.Unbind(action);
+    }
+    catch
+    {
+      // The derived projection below will use safe defaults for stale actions.
+    }
+
+    return new NativeActionSnapshot(
+      index,
+      Read(() => action.ActionId),
+      Read(() => action.Type.ToString()) ?? "Unknown",
+      Read(() => action.Name) ?? string.Empty,
+      Read<string?>(() => Convert.ToString(rawAction?.GroupName)),
+      Read<string?>(() => Convert.ToString(rawAction?.ActionChoices)),
+      Read<string?>(() => Convert.ToString(rawAction?.ModeChoiceMapping)),
+      Read(() => action.Targets.Count),
+      Read(() => (bool)(rawAction?.CanBePerformedLocally ?? false)),
+      Read(() => (bool)(rawAction?.AltMenuAction ?? false)),
+      Read(() => Convert.ToInt32(rawAction?.AttackVictimId ?? 0)));
+  }
+
   private static CardState ProjectCard(GameCard card, ZonePosition? position)
   {
     return new CardState(
@@ -232,6 +387,23 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       position?.Index,
       position?.NameOrdinal
     );
+  }
+
+  private static AgentAction? TryProjectAction(
+    int id,
+    ActionCandidate candidate)
+  {
+    try
+    {
+      return ProjectAction(id, candidate);
+    }
+    catch
+    {
+      // A native action can be removed between a collection notification and
+      // this derived export. Do not let one stale wrapper hide the remaining
+      // live actions or trigger an export failure loop.
+      return null;
+    }
   }
 
   private static AgentAction ProjectAction(int id, ActionCandidate candidate)
@@ -258,8 +430,12 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         number = new NumberRange(numeric.Minimum, numeric.Maximum, numeric.Initial);
         break;
       case SelectPlayerAction selectPlayer:
-        choices = (Read(() => selectPlayer.AvailablePlayers.ToList()) ?? [])
-          .Select(player => new ActionChoice(player.UserId, player.Name))
+        choices = (Read(() => selectPlayer.AvailablePlayers
+          .OfType<GamePlayer>()
+          .ToList()) ?? [])
+          .Select(player => new ActionChoice(
+            Read(() => player.UserId),
+            Read(() => player.Name) ?? string.Empty))
           .ToList();
         break;
       case SelectFromListAction selectFromList:
@@ -292,8 +468,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 
     return new AgentAction(
       id,
-      action.Type.ToString(),
-      action.Name,
+      Read(() => action.Type.ToString()) ?? action.GetType().Name,
+      Read(() => action.Name) ?? string.Empty,
       candidate.Source,
       targets,
       number,
@@ -368,7 +544,10 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
   }
 
   private static List<GameAction> ReadPromptActions(GamePrompt prompt) =>
-    Read(() => prompt.Options.Values.SelectMany(actions => actions).ToList()) ?? [];
+    Read(() => prompt.Options.Values
+      .SelectMany(actions => actions)
+      .Where(action => action is not null)
+      .ToList()) ?? [];
 
   private static T? Read<T>(Func<T> getter)
   {
@@ -384,12 +563,14 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 
   public void Dispose()
   {
-    _uiMonitor?.Dispose();
-    _uiMonitor = null;
     GameProcessor.OnNewGame -= AttachGame;
     foreach (var game in _games.Values)
       game.ClearEvents();
     _games.Clear();
+    _prompts.Clear();
+    _snapshots.Clear();
+    _lastUiRefreshes.Clear();
+    _refreshQueued.Clear();
   }
 
   private sealed record ActionCandidate(GameAction Action, ActionSource Source);

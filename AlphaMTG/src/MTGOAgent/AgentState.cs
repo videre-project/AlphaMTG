@@ -35,7 +35,7 @@ internal static class AgentStateStore
     ) ?? throw new InvalidOperationException("The game-state file is empty.");
   }
 
-  public static void Write(string path, AgentState state)
+  public static void Write<T>(string path, T state)
   {
     var fullPath = Path.GetFullPath(path);
     Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
@@ -115,3 +115,49 @@ internal sealed record DistributionState(
   int Maximum,
   int Value
 );
+
+// This is intentionally separate from AgentState. It describes the live native
+// action view from the SDK card-action registry, and is refreshed when a local
+// action collection changes without waiting for another GameStateSnapshot.
+internal sealed record NativeUiSnapshot(
+  DateTimeOffset CapturedAtUtc,
+  int GameId,
+  int ServerNonce,
+  int PromptNonce,
+  string? PromptText,
+  long RegistryVersion,
+  IReadOnlyList<NativeCardSnapshot> Cards
+);
+
+internal sealed record NativeCardSnapshot(
+  int Id,
+  int SourceId,
+  string? Name,
+  string? Zone,
+  bool IsAttacking,
+  bool IsTapped,
+  // What the client will accept a click on right now. This is deliberately
+  // separate from Actions: a card can be selectable with an empty action list,
+  // which is how MTGO offers a target for selection.
+  bool Selectable,
+  bool Targetable,
+  bool Targeted,
+  int? ScreenX,
+  int? ScreenY,
+  IReadOnlyList<NativeActionSnapshot> Actions
+);
+
+internal sealed record NativeActionSnapshot(
+  int Index,
+  int ActionFlags,
+  string Type,
+  string Name,
+  string? GroupName,
+  string? ActionChoices,
+  string? ModeChoiceMapping,
+  int TargetCount,
+  bool CanBePerformedLocally,
+  bool AltMenuAction,
+  int AttackVictimId
+);
+

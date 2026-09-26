@@ -1,7 +1,7 @@
 # AlphaMTG development container.
 #
-# Use the host desktop for interactive Wine testing. MTGO and FlaUInspect run
-# in the same Wine prefix so the inspector can see MTGO's UI.
+# Use the host desktop for interactive Wine testing. Game state and actions
+# come from the MTGOSDK native hooks; no UIA provider is required.
 
 name: alphamtg
 
@@ -28,13 +28,11 @@ services:
       GDK_BACKEND: x11
       MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
       GALLIUM_DRIVER: llvmpipe
-      # The WPF FlaUInspect window is optional. AlphaMTG's UIA diagnostic path
-      # is `docker compose exec alphamtg run-alphamtg-uia snapshot`.
-      FLAUINSPECT_AUTOSTART: "0"
-      FLAUINSPECT_START_DELAY: "15"
-      FLAUINSPECT_MTGO_WAIT_TIMEOUT: "120"
     volumes:
       - .:/workspace
+      # MTGOSDK's documented local package feed. The NuGet.config path is
+      # relative so it resolves to this mount inside the container.
+      - ../MTGOSDK/packages:/MTGOSDK/packages:ro
       - alphamtg-wine-data:/home/wine/.wine
       - ${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set}/${WAYLAND_DISPLAY:-wayland-0}:/tmp/runtime-dir/${WAYLAND_DISPLAY:-wayland-0}
       - /tmp/.X11-unix:/tmp/.X11-unix
