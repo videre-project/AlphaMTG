@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
 using AlphaMTG.MTGOAgent;
+using AlphaMTG.MTGOAgent.Diagnostics;
 using AlphaMTG.MTGOAgent.UIA;
 
 
@@ -20,6 +21,9 @@ internal static class Program
   [STAThread]
   public static async Task<int> Main(string[] args)
   {
+    if (args.FirstOrDefault() == "native-actions")
+      return NativeActionsCommand.Run(args[1..]);
+
     if (args.FirstOrDefault() == "uia")
       return UIACommand.Run(args[1..]);
 
@@ -49,6 +53,9 @@ internal static class Program
     );
     gameStateExporter.Start();
 
+    using var nativeActionTest = CreateNativeActionTestController(logger);
+    nativeActionTest?.Start();
+
     logger.LogInformation(
       "MTGO client started. Waiting for shutdown."
     );
@@ -57,5 +64,17 @@ internal static class Program
     await Task.Delay(Timeout.InfiniteTimeSpan);
     GC.KeepAlive(client);
     return 0;
+  }
+
+  private static NativeActionTestController? CreateNativeActionTestController(
+    ILogger logger)
+  {
+    string? enabled = Environment.GetEnvironmentVariable(
+      "ALPHAMTG_ENABLE_NATIVE_ACTION_TEST");
+    return string.Equals(enabled, "1", StringComparison.Ordinal)
+        || string.Equals(enabled, "true", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(enabled, "yes", StringComparison.OrdinalIgnoreCase)
+      ? new NativeActionTestController(logger)
+      : null;
   }
 }

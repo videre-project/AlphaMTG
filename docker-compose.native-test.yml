@@ -1,0 +1,4 @@
+services:
+  alphamtg:
+    environment:
+      - ALPHAMTG_ENABLE_NATIVE_ACTION_TEST=1
