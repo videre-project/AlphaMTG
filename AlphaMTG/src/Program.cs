@@ -21,12 +21,34 @@ internal static class Program
   [STAThread]
   public static async Task<int> Main(string[] args)
   {
-    if (args.FirstOrDefault() == "native-actions")
-      return NativeActionsCommand.Run(args[1..]);
+    if (args.Length > 0)
+    {
+      switch (args[0])
+      {
+        case "uia": return UIACommand.Run(args[1..]);
+        case "native-actions": return NativeActionsCommand.Run(args[1..]);
+        default:
+          Console.Error.WriteLine($"Unknown command '{args[0]}'.\n{Usage}");
+          return 2;
+      }
+    }
 
-    if (args.FirstOrDefault() == "uia")
-      return UIACommand.Run(args[1..]);
+    if (!AgentInstanceLock.TryAcquire(
+          AgentInstanceLock.DefaultPath,
+          out AgentInstanceLock? acquiredLock,
+          out string? holder)
+        || acquiredLock is null)
+    {
+      Console.Error.WriteLine(
+        "Could not lock the AlphaMTG game-state files "
+          + $"({AgentInstanceLock.DefaultPath}: {holder}). "
+          + "Choose a different ALPHAMTG_GAME_STATE_PATH to write a separate "
+          + "state file. Diagnostic commands such as 'uia' and "
+          + "'native-actions' are unaffected and may still be run.");
+      return 3;
+    }
 
+    using AgentInstanceLock instanceLock = acquiredLock;
     using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
     {
       builder
@@ -65,6 +87,18 @@ internal static class Program
     GC.KeepAlive(client);
     return 0;
   }
+
+  private const string Usage =
+    "Usage: AlphaMTG [command]\n"
+      + "\n"
+      + "  (no command)  Run the agent. Only one instance may run at a time.\n"
+      + "  uia           Drive MTGO through UI Automation.\n"
+      + "                  AlphaMTG uia dump-tree [--raw] [--find-name TEXT]\n"
+      + "                  AlphaMTG uia select ...\n"
+      + "  native-actions\n"
+      + "                Report what MTGO will accept a click on.\n"
+      + "                  AlphaMTG native-actions --game-id ID [--card-id ID]\n"
+      + "                                    [--with-position]\n";
 
   private static NativeActionTestController? CreateNativeActionTestController(
     ILogger logger)
