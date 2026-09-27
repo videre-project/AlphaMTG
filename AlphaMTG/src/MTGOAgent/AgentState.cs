@@ -68,7 +68,17 @@ internal sealed record PlayerState(
   int UserId,
   string Name,
   int Life,
-  bool HasPriority
+  bool HasPriority,
+  // What MTGO will accept a click on for this player right now. Written by
+  // the scene's own targetability pass and gated by InteractionState.Mode, so
+  // these already account for whether a target is being asked for.
+  //
+  // No screen position: a player view model holds no reference to its own
+  // view, so unlike a card there is no native way to resolve where the mat is
+  // drawn. Player clicks go through the UI Automation tree.
+  bool Targetable,
+  bool Targeted,
+  bool Active
 );
 
 internal sealed record CardState(
@@ -126,6 +136,12 @@ internal sealed record NativeUiSnapshot(
   int PromptNonce,
   string? PromptText,
   long RegistryVersion,
+  // The duel scene's client-local interaction mode (for example,
+  // SelectTargets while MTGO is waiting for a target) and the prompt box
+  // text the client set for it. Target selection produces no server snapshot
+  // and no game prompt, so without these the targeting state is invisible.
+  string InteractionMode,
+  string? PromptBoxText,
   IReadOnlyList<NativeCardSnapshot> Cards
 );
 
@@ -139,11 +155,14 @@ internal sealed record NativeCardSnapshot(
   // What the client will accept a click on right now. This is deliberately
   // separate from Actions: a card can be selectable with an empty action list,
   // which is how MTGO offers a target for selection.
+  //
+  // Screen position is intentionally absent. It is only needed at the moment
+  // of a click, and publishing coordinates in a snapshot invites acting on
+  // coordinates that have since gone stale. The registry resolves a position
+  // on demand at selection time.
   bool Selectable,
   bool Targetable,
   bool Targeted,
-  int? ScreenX,
-  int? ScreenY,
   IReadOnlyList<NativeActionSnapshot> Actions
 );
 

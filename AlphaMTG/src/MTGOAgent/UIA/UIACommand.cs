@@ -5,6 +5,8 @@
 
 using System.Text.Json;
 
+using MTGOSDK.API.Play.Games.Processors;
+
 namespace AlphaMTG.MTGOAgent.UIA;
 
 /// <summary>
@@ -60,7 +62,6 @@ internal static class UIACommand
 
         case "select":
         {
-          using var executor = new ActionExecutor(statePath);
           var cardId = OptionalInt(args, "--card-id");
           var playerName = OptionalValue(args, "--player");
           if (cardId.HasValue && playerName is not null)
@@ -69,8 +70,73 @@ internal static class UIACommand
               "--card-id and --player cannot be supplied together.");
           }
 
+          // A card click is resolved natively, which needs a live client. A
+          // player click goes through the automation tree and does not, so the
+          // attach is only required when a card was named.
+          using NativeSession? session = cardId.HasValue
+            ? NativeSession.Attach(statePath)
+            : null;
+
+          using var executor = new ActionExecutor(statePath, session?.Registry);
           result = executor.Select(
             new SelectionTarget(cardId, playerName));
+          break;
+        }
+
+        case "scroll-to":
+        {
+          // Resolves a verified clickable position, scrolling the zone list
+          // when needed, without clicking. This is how scrolling is tested
+          // without spending a game action.
+          using NativeSession scrollSession = NativeSession.Attach(statePath);
+          using var scrollExecutor =
+            new ActionExecutor(statePath, scrollSession.Registry);
+          int scrollCardId = RequiredInt(args, "--card-id");
+          ScreenPoint? scrolled =
+            scrollExecutor.ResolveClickPosition(
+              scrollSession.Registry, scrollCardId);
+          result = scrolled is null
+            ? throw new InvalidOperationException(
+              $"Card {scrollCardId} could not be scrolled on screen.")
+            : new ActionExecution(
+              0,
+              "scroll-to",
+              scrollCardId.ToString(),
+              scrollCardId,
+              $"Scrolled card {scrollCardId} to {scrolled.X},{scrolled.Y}.");
+          break;
+        }
+
+        case "preview-card":
+        {
+          using NativeSession previewSession = NativeSession.Attach(statePath);
+          using var previewExecutor =
+            new ActionExecutor(statePath, previewSession.Registry);
+          result = previewExecutor.PreviewCard(
+            RequiredInt(args, "--card-id"));
+          break;
+        }
+
+        case "preview-dialog":
+        {
+          using var previewExecutor = new ActionExecutor(statePath);
+          result = previewExecutor.PreviewDialogItem(
+            RequiredValue(args, "--name"),
+            OptionalInt(args, "--index"));
+          break;
+        }
+
+        case "select-dialog":
+        {
+          // Dialog items (trigger ordering, card selection lists) are
+          // neither actions nor target selections, so Select refuses them.
+          // This resolves the item geometrically and clicks a verified
+          // visible point instead.
+          using var dialogExecutor = new ActionExecutor(statePath);
+          int? dialogIndex = OptionalInt(args, "--index");
+          result = dialogExecutor.SelectDialogItem(
+            RequiredValue(args, "--name"),
+            dialogIndex);
           break;
         }
 
@@ -84,12 +150,36 @@ internal static class UIACommand
           break;
         }
 
+        case "click-at":
+        {
+          // Raw coordinate click with no gates and no identity resolution.
+          // This exists for probing elements the model cannot see (dialog
+          // items without view models); it spends a real click, so it is a
+          // manual test branch, not an agent path.
+          int x = RequiredInt(args, "--x");
+          int y = RequiredInt(args, "--y");
+          int holdMs = OptionalInt(args, "--hold-ms") ?? 0;
+          if (holdMs > 0)
+            UiaSession.HoldAt(x, y, holdMs);
+          else
+            UiaSession.ClickAt(x, y);
+          result = new ActionExecution(
+            0,
+            "click-at",
+            $"{x},{y}",
+            null,
+            $"Clicked coordinates {x},{y}"
+              + (holdMs > 0 ? $" held {holdMs}ms." : "."));
+          break;
+        }
+
         default:
           throw new ArgumentException(
             "Use 'uia dump-tree [--automation-id ID | --name-contains TEXT] "
               + "[--depth N] [--properties] [--ancestors] [--raw]', "
               + "'uia dump-tree --find-name TEXT [--raw] [--ancestors]', "
               + "'uia select (--card-id N | --player NAME)', "
+            + "'uia select-dialog --name CARD', "
               + "'uia execute-action --game-id N --nonce N --action-id N "
               + "[--target-set N --target-id N | --choice-id N]' "
               + "or 'uia click-control --name LABEL'.");

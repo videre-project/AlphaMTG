@@ -78,6 +78,69 @@ internal sealed class UiaSession : IDisposable
     }
   }
 
+  /// <summary>
+  /// Clicks a point on screen.
+  /// </summary>
+  /// <remarks>
+  /// Used when the target was resolved natively rather than through the
+  /// automation tree, so there is no element to invoke. Every MTGO pattern a
+  /// person would normally use (Invoke, LegacyIAccessible) is unsupported by
+  /// this client's UI, so a coordinate click is the only way to deliver one.
+  /// </summary>
+  /// <remarks>
+  /// The move, press, and release are sequenced with delays between them. A
+  /// back-to-back down/up pair arrives as a hover (the cursor moves and the
+  /// highlight follows) without ever registering as a click.
+  /// </remarks>
+  public static void ClickAt(int x, int y)
+  {
+    var point = new Point(x, y);
+    Mouse.MoveTo(point);
+    Thread.Sleep(250);
+    Mouse.Down(MouseButton.Left);
+    Thread.Sleep(150);
+    Mouse.Up(MouseButton.Left);
+  }
+
+  /// <summary>
+  /// Double-clicks a point on screen, sequenced like <see cref="ClickAt"/>.
+  /// </summary>
+  /// <remarks>
+  /// Selection dialogs take a double click to choose an item; a single click
+  /// only moves hover there.
+  /// </remarks>
+  public static void DoubleClickAt(int x, int y)
+  {
+    var point = new Point(x, y);
+    Mouse.MoveTo(point);
+    Thread.Sleep(250);
+    Mouse.Down(MouseButton.Left);
+    Thread.Sleep(120);
+    Mouse.Up(MouseButton.Left);
+    Thread.Sleep(150);
+    Mouse.Down(MouseButton.Left);
+    Thread.Sleep(120);
+    Mouse.Up(MouseButton.Left);
+  }
+
+  /// <summary>
+  /// Presses down at a point, holds, and releases without moving.
+  /// </summary>
+  /// <remarks>
+  /// Some controls act on press-and-hold (pick-up semantics) rather than a
+  /// quick click. Anything above a couple of seconds risks being read as a
+  /// drag; keep holds short.
+  /// </remarks>
+  public static void HoldAt(int x, int y, int holdMs)
+  {
+    var point = new Point(x, y);
+    Mouse.MoveTo(point);
+    Thread.Sleep(250);
+    Mouse.Down(MouseButton.Left);
+    Thread.Sleep(Math.Max(50, holdMs));
+    Mouse.Up(MouseButton.Left);
+  }
+
   public static string? GetAutomationId(AutomationElement element) =>
     NullIfEmpty(element.Properties.AutomationId.ValueOrDefault);
 
@@ -230,6 +293,107 @@ internal sealed class UiaSession : IDisposable
   }
 
   /// <summary>
+  /// Finds a player's scrollable zone list (graveyard, exile) in the duel
+  /// side panel, with its viewport and scroll buttons.
+  /// </summary>
+  /// <remarks>
+  /// Graveyard and exile rows are realized views positioned past the visible
+  /// viewport when scrolled out, so a native coordinate alone can point at
+  /// pixels showing something else. The panel itself is a fixed viewport with
+  /// up/down repeat buttons; scrolling it is a UI Automation operation, which
+  /// is why this lives here rather than in the native registry.
+  /// </remarks>
+  public ZoneListPanel? FindZoneListPanel(string playerName)
+  {
+    foreach (AutomationElement window in GetMtgoWindows())
+    {
+      foreach (AutomationElement panel in RawDescendants(window))
+      {
+        if (!string.Equals(
+          GetClassName(panel), "VerticalPanelView", StringComparison.Ordinal))
+        {
+          continue;
+        }
+
+        // The side view holds both the player box (which names the player)
+        // and the zone list, so climb to it and confirm the owner before
+        // accepting the panel.
+        AutomationElement? sideView = ClimbToClass(panel, "PlayerInfoSideView");
+        if (sideView is null) continue;
+        if (!SideViewNamesPlayer(sideView, playerName)) continue;
+
+        Rectangle? viewport = GetBounds(panel);
+        if (viewport is null) continue;
+        AutomationElement? up = null;
+        AutomationElement? down = null;
+        foreach (AutomationElement child in RawDescendants(sideView))
+        {
+          string? automationId = GetAutomationId(child);
+          if (string.Equals(automationId, "UpArrow", StringComparison.Ordinal))
+            up ??= child;
+          else if (string.Equals(
+            automationId, "DownArrow", StringComparison.Ordinal))
+          {
+            down ??= child;
+          }
+        }
+
+        if (up is null || down is null) continue;
+        return new ZoneListPanel(viewport.Value, up, down);
+      }
+    }
+
+    return null;
+  }
+
+  private static AutomationElement? ClimbToClass(
+    AutomationElement element,
+    string className)
+  {
+    for (AutomationElement? current = element; current is not null;
+      current = current.Parent)
+    {
+      if (string.Equals(
+        GetClassName(current), className, StringComparison.Ordinal))
+      {
+        return current;
+      }
+    }
+
+    return null;
+  }
+
+  private static bool SideViewNamesPlayer(
+    AutomationElement sideView,
+    string playerName)
+  {
+    foreach (AutomationElement candidate in RawDescendants(sideView))
+    {
+      if (!string.Equals(
+        GetName(candidate), playerName, StringComparison.Ordinal))
+      {
+        continue;
+      }
+
+      if (ClimbToClass(candidate, "PlayerInfoDetailsView") is not null)
+        return true;
+    }
+
+    return false;
+  }
+
+  /// <summary>
+  /// A scrollable zone list viewport with its scroll buttons.
+  /// </summary>
+  /// <param name="Viewport">The visible rectangle of the list.</param>
+  /// <param name="UpButton">Scrolls toward earlier entries.</param>
+  /// <param name="DownButton">Scrolls toward later entries.</param>
+  public sealed record ZoneListPanel(
+    Rectangle Viewport,
+    AutomationElement UpButton,
+    AutomationElement DownButton);
+
+  /// <summary>
   /// Finds the player mat for a player name.
   /// </summary>
   /// <remarks>
@@ -241,12 +405,14 @@ internal sealed class UiaSession : IDisposable
   /// </remarks>
   public AutomationElement? FindPlayerBox(string playerName)
   {
+    // The player name is invisible in the control view; only the raw view
+    // exposes the TextBlock it is bound to. Scope cannot come from finding a
+    // "DuelScene" element first, because that element carries no automation id
+    // in either view. Instead every raw-view name match is climbed, and only
+    // a match sitting inside a player box inside the duel scene is accepted.
     foreach (AutomationElement window in GetMtgoWindows())
     {
-      AutomationElement? scene = FindVisibleElement(window, "DuelScene", null);
-      if (scene is null) continue;
-
-      foreach (AutomationElement candidate in RawDescendants(scene))
+      foreach (AutomationElement candidate in RawDescendants(window))
       {
         if (!string.Equals(
           UiaSession.GetName(candidate),
@@ -256,7 +422,7 @@ internal sealed class UiaSession : IDisposable
           continue;
         }
 
-        AutomationElement? box = ClimbToPlayerBox(candidate);
+        AutomationElement? box = ClimbToPlayerBoxInDuelScene(candidate);
         if (box is not null) return box;
       }
     }
@@ -264,17 +430,36 @@ internal sealed class UiaSession : IDisposable
     return null;
   }
 
-  private static AutomationElement? ClimbToPlayerBox(AutomationElement element)
+  /// <summary>
+  /// Climbs from a name match to the player box, and only accepts it when the
+  /// box sits inside the duel scene. The name alone is not enough: it also
+  /// appears in the match lobby side panel, the commander dialog, and the
+  /// game log, none of which may be clicked as a target.
+  /// </summary>
+  private static AutomationElement? ClimbToPlayerBoxInDuelScene(
+    AutomationElement element)
   {
+    AutomationElement? box = null;
     for (AutomationElement? current = element; current is not null;
       current = current.Parent)
     {
-      if (string.Equals(
-        GetClassName(current),
-        "PlayerInfoDetailsView",
+      string? className = GetClassName(current);
+      if (box is null)
+      {
+        if (string.Equals(
+          className,
+          "PlayerInfoDetailsView",
+          StringComparison.Ordinal))
+        {
+          box = current;
+        }
+      }
+      else if (string.Equals(
+        className,
+        "DuelScene",
         StringComparison.Ordinal))
       {
-        return current;
+        return box;
       }
     }
 
@@ -285,6 +470,83 @@ internal sealed class UiaSession : IDisposable
     root.FindAll(
       TreeScope.Descendants,
       FlaUI.Core.Conditions.TrueCondition.Default);
+
+  /// <summary>
+  /// Names of the UI Automation patterns an element supports.
+  /// Empty when pattern enumeration itself is unsupported.
+  /// </summary>
+  public static IReadOnlyList<string> GetPatterns(AutomationElement element)
+  {
+    var patterns = new List<string>();
+    try
+    {
+      foreach (var pattern in element.GetSupportedPatterns())
+      {
+        try
+        {
+          patterns.Add(pattern.Name);
+        }
+        catch
+        {
+          // Unnamed pattern; skip it.
+        }
+      }
+    }
+    catch
+    {
+      // Pattern enumeration unsupported; leave empty.
+    }
+
+    return patterns;
+  }
+
+  /// <summary>
+  /// A raw image element with its screen bounds.
+  /// </summary>
+  /// <param name="AutomationId">The element's automation id, if any.</param>
+  /// <param name="Bounds">Screen bounds. Elements without bounds are skipped.</param>
+  /// <param name="Patterns">Supported pattern names, when requested.</param>
+  /// <param name="ParentClassName">Immediate UIA container class.</param>
+  public sealed record RawImage(
+    string? AutomationId,
+    Rectangle Bounds,
+    IReadOnlyList<string> Patterns,
+    string? ParentClassName);
+
+  /// <summary>
+  /// Lists every raw image element across the client's windows.
+  /// </summary>
+  /// <remarks>
+  /// Card art in dialogs and zone lists often carries no name, so candidate
+  /// click targets are found by geometry instead of identity.
+  /// </remarks>
+  public IReadOnlyList<RawImage> FindImages()
+  {
+    var images = new List<RawImage>();
+    foreach (AutomationElement window in GetMtgoWindows())
+    {
+      foreach (AutomationElement element in RawDescendants(window))
+      {
+        if (!string.Equals(
+          GetControlType(element).ToString(),
+          "Image",
+          StringComparison.Ordinal))
+        {
+          continue;
+        }
+
+        Rectangle? bounds = GetBounds(element);
+        if (bounds is null) continue;
+
+        images.Add(new RawImage(
+          GetAutomationId(element), bounds.Value, GetPatterns(element),
+          element.Parent is AutomationElement parent
+            ? GetClassName(parent) : null));
+      }
+    }
+
+    return images;
+  }
 
   /// <summary>
   /// Finds an enabled, visible control whose label matches, preferring the

@@ -4,6 +4,7 @@
 **/
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 
@@ -13,18 +14,37 @@ using MTGOSDK.API.Play.Games;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.API.Play.Games.Processors.EventArgs;
 using MTGOSDK.Core.Reflection;
+using MTGOSDK.Core.Reflection.Serialization;
 
 
 namespace AlphaMTG.MTGOAgent;
 
 internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisposable
 {
+  /// <summary>
+  /// A native UI snapshot slower than this is worth reporting, because its
+  /// cost is paid on the MTGO client's UI thread.
+  /// </summary>
+  private static readonly TimeSpan s_slowNativeUiWrite =
+    TimeSpan.FromMilliseconds(250);
+
+  /// <summary>
+  /// A state refresh slower than this is worth reporting, because it holds up
+  /// every later refresh for the same game.
+  /// </summary>
+  private static readonly TimeSpan s_slowRefresh =
+    TimeSpan.FromSeconds(2);
+
   private readonly ConcurrentDictionary<int, Game> _games = new();
   private readonly ConcurrentDictionary<int, GamePrompt> _prompts = new();
   private readonly ConcurrentDictionary<int, GameStateSnapshot> _snapshots = new();
   private readonly object _writeLock = new();
   private readonly ConcurrentDictionary<int, string> _lastUiRefreshes = new();
   private readonly ConcurrentDictionary<int, byte> _refreshQueued = new();
+  private readonly ConcurrentDictionary<int, byte> _refreshDirty = new();
+  private readonly ConcurrentDictionary<int, byte> _batchChecked = new();
+  private readonly ConcurrentDictionary<int, byte> _batchBypass = new();
+  private readonly ConcurrentDictionary<int, byte> _batchLogged = new();
   private readonly string _outputPath = AgentStateStore.DefaultPath;
   private readonly string _nativeUiOutputPath =
     Environment.GetEnvironmentVariable("ALPHAMTG_NATIVE_UI_STATE_PATH")
@@ -35,6 +55,29 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     GameProcessor.OnNewGame += AttachGame;
     GameProcessor.EnsureHookInitialized();
     logger.LogInformation("MTGO game-state exporter is ready.");
+  }
+
+  /// <summary>
+  /// Re-exports a game whose duel scene changed interaction mode.
+  /// </summary>
+  /// <remarks>
+  /// Entering and leaving target selection produces no prompt and no state
+  /// snapshot, so no prompt or card event fires while MTGO is waiting for a
+  /// target. The interaction mode is the only signal for that transition, and
+  /// it is what makes the targetable cards and players in the snapshot
+  /// meaningful.
+  /// </remarks>
+  private void OnInteractionModeChanged(Game game, InteractionMode mode)
+  {
+    if (!_games.ContainsKey(game.Id))
+      return;
+
+    logger.LogInformation(
+      "MTGO game {GameId} entered interaction mode {Mode}.",
+      game.Id,
+      mode);
+
+    ScheduleRefresh(game);
   }
 
   private void AttachGame(Game game)
@@ -49,6 +92,43 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       // The SDK registry is attached before the built-in processor events so
       // the exporter has an authoritative action view for each snapshot.
       game.CardActionsChanged += _ => ScheduleRefresh(game);
+
+      // Target selection changes the interaction mode without setting a prompt
+      // or sending a snapshot, so this is the only notification of it.
+      //
+      // Attached best-effort. This runs inside the remoting callback that
+      // discovers games, so an exception here propagates into the
+      // communicator and silently stops every game from ever being tracked. A
+      // tracker that cannot attach must not take the exporter down with it.
+      try
+      {
+        game.InteractionModeChanged +=
+          mode => OnInteractionModeChanged(game, mode);
+
+        if (game.InteractionState.AttachFailure is Exception failure)
+        {
+          logger.LogWarning(
+            failure,
+            "Interaction-mode tracking for MTGO game {GameId} could not hook "
+              + "the duel scene and will not report target selection.",
+            game.Id);
+        }
+        else
+        {
+          logger.LogInformation(
+            "MTGO game {GameId} is tracking duel-scene interaction mode.",
+            game.Id);
+        }
+      }
+      catch (Exception exception)
+      {
+        logger.LogWarning(
+          exception,
+          "Could not attach interaction-mode tracking for MTGO game {GameId}. "
+            + "The exporter will keep working, but it will not see target "
+            + "selection start or end.",
+          game.Id);
+      }
 
       game.OnPromptChanged += args =>
       {
@@ -86,30 +166,53 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     }
   }
 
-  private void RefreshGames()
-  {
-    foreach (Game game in _games.Values)
-      Refresh(game);
-  }
-
   private void ScheduleRefresh(Game game)
   {
     // Registry notifications are delivered from the SDK remoting/processor
     // thread. Never call WaitForPendingProcessing synchronously from that
     // thread, because the drain task may be waiting on this callback.
+    //
+    // A refresh already in flight does not drop this one: it marks the game
+    // dirty, and the running task drains dirt until clean. Dropping here
+    // would lose state transitions that arrive while a refresh is running,
+    // which on a busy board is most of them.
+    _refreshDirty[game.Id] = 0;
     if (!_refreshQueued.TryAdd(game.Id, 0))
       return;
 
     _ = Task.Run(() =>
     {
+      var started = Stopwatch.GetTimestamp();
       try
       {
-        if (_games.ContainsKey(game.Id))
+        while (_refreshDirty.TryRemove(game.Id, out _))
+        {
+          if (!_games.ContainsKey(game.Id))
+            break;
+
           Refresh(game);
+        }
+
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        if (elapsed > s_slowRefresh)
+        {
+          logger.LogWarning(
+            "State refresh for MTGO game {GameId} took {ElapsedMs} ms.",
+            game.Id,
+            (int)elapsed.TotalMilliseconds);
+        }
       }
       finally
       {
         _refreshQueued.TryRemove(game.Id, out _);
+        // Dirt that arrived between the last drain and this removal would
+        // otherwise sit with no runner. Re-queueing covers it; the extra run
+        // is cheap when nothing changed.
+        if (_refreshDirty.TryRemove(game.Id, out _)
+            && _games.ContainsKey(game.Id))
+        {
+          ScheduleRefresh(game);
+        }
       }
     });
   }
@@ -133,15 +236,16 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       }
 
       CardActionRegistry? registry = game.CardActions;
-      // The native/UI dump is independent of the server snapshot. In
-      // particular, a CollectionChanged notification can be the only state
-      // transition after a local menu or mode interaction.
-      WriteNativeUiSnapshot(game, snapshot, prompt, registry);
-
-      // Include the registry version so an action-only collection mutation
-      // produces a fresh export even when the prompt text and nonce are
-      // unchanged.
-      string signature = $"{prompt.Nonce}:{prompt.Text}:{registry?.Version ?? 0}";
+      // Include the registry version and the interaction mode so a change in
+      // either produces a fresh export even when the prompt text and nonce
+      // are unchanged. The mode matters most: entering target selection
+      // changes neither the prompt nor the nonce, but it does change which
+      // cards and players are targetable. Every refresh trigger (action-list
+      // change, mode change, prompt change) moves at least one of these, so
+      // an unchanged signature means a redundant delivery and is safe to skip.
+      InteractionMode mode = game.InteractionState.Mode;
+      string signature =
+        $"{prompt.Nonce}:{prompt.Text}:{registry?.Version ?? 0}:{mode}";
       if (_lastUiRefreshes.TryGetValue(game.Id, out string? previous)
           && previous == signature)
       {
@@ -172,9 +276,12 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
   {
     try
     {
-      // Always retain a native/UI view, including when it cannot yet be
-      // correlated with a new server snapshot or belongs to another player.
-      WriteNativeUiSnapshot(game, snapshot, prompt, registry);
+      // Resolve every card value once. Each property access below crosses
+      // into the client, so reading each value once here (instead of once
+      // per document, ordering, and grouping) is what keeps large boards
+      // exportable. Everything below this line is local projection.
+      var cards = ResolveCards(game, snapshot, registry);
+      WriteNativeUiSnapshot(game, snapshot, prompt, registry, cards);
 
       if (snapshot.Nonce != prompt.Nonce && nonceOverride is null)
         return;
@@ -196,6 +303,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         snapshot,
         prompt,
         registry,
+        cards,
         nonceOverride);
       lock (_writeLock)
         AgentStateStore.Write(_outputPath, document);
@@ -213,25 +321,307 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     }
   }
 
+  /// <summary>
+  /// Everything both exported documents need for one card, read once per
+  /// export. Every property access on a live wrapper crosses into the
+  /// client, so resolving each value here and projecting locally below is
+  /// what keeps large boards exportable.
+  /// </summary>
+  private sealed record ResolvedCard(
+    GameCard Card,
+    int Id,
+    int SourceId,
+    int Ctn,
+    string? Zone,
+    int OwnerIndex,
+    int ControllerIndex,
+    string? Name,
+    bool IsAttacking,
+    bool IsTapped,
+    CardSelectable? Selectable,
+    IReadOnlyList<CardAction> Actions);
+
+  /// <summary>
+  /// Bounded parallelism for per-card and per-action remote reads.
+  /// </summary>
+  /// <remarks>
+  /// Mirrors the SDK's own batch discipline: one parallel level at a time,
+  /// per-item work sequential inside. Callers must never nest one parallel
+  /// loop inside another.
+  /// </remarks>
+  private static ParallelOptions BatchOptions(int count) =>
+    new()
+    {
+      MaxDegreeOfParallelism = Math.Max(
+        1, Math.Min(count, Environment.ProcessorCount))
+    };
+
+  /// <summary>
+  /// Batch paths resolved per zone in a single IPC call each. Zone and owner
+  /// come free from batch context, so they are not member reads.
+  /// </summary>
+  private static readonly string[] s_batchPaths =
+  [
+    "Id", "Name",
+    "Tag.CardViewModel.HasActions", "Tag.CardViewModel.IsSelectable",
+    "Tag.CardViewModel.IsTargetable", "Tag.CardViewModel.IsTargeted",
+  ];
+
+  private static readonly CardZone[] s_batchZones =
+  [
+    CardZone.Battlefield, CardZone.Hand, CardZone.Stack,
+    CardZone.Graveyard, CardZone.Exile,
+  ];
+
+  /// <summary>
+  /// One row of zone-batch data: everything the batch endpoint served.
+  /// </summary>
+  private sealed record BatchedRow(
+    string? Zone,
+    int OwnerIndex,
+    string? Name,
+    bool HasActions,
+    bool IsSelectable,
+    bool IsTargetable,
+    bool IsTargeted);
+
+  private IReadOnlyList<ResolvedCard> ResolveCards(
+    Game game,
+    GameStateSnapshot snapshot,
+    CardActionRegistry? registry)
+  {
+    var batched = ReadZoneBatches(game, snapshot);
+
+    // Once per game, prove the batch path faithful by comparing a few rows
+    // against the proven single-read path. On divergence the game bypasses
+    // batching permanently (correctness first); the per-card fallback below
+    // is today's behavior.
+    if (registry is not null
+        && batched.Count > 0
+        && !_batchChecked.ContainsKey(game.Id)
+        && !_batchBypass.ContainsKey(game.Id))
+    {
+      _batchChecked[game.Id] = 0;
+      if (!ValidateBatch(game, registry, batched))
+      {
+        _batchBypass[game.Id] = 0;
+        logger.LogWarning(
+          "Zone-batch reads diverged from single reads for MTGO game "
+            + "{GameId}; batching bypassed for this game.",
+          game.Id);
+      }
+      else
+      {
+        logger.LogInformation(
+          "Zone-batch reads engaged for MTGO game {GameId} "
+            + "({CardCount} cards across zones).",
+          game.Id,
+          batched.Count);
+      }
+    }
+
+    bool useBatch = registry is not null
+      && batched.Count > 0
+      && !_batchBypass.ContainsKey(game.Id);
+
+    var cards = snapshot.Cards.Values.ToList();
+    var resolved = new ResolvedCard[cards.Count];
+    Parallel.For(0, cards.Count, BatchOptions(cards.Count), i =>
+    {
+      GameCard card = cards[i];
+      int id = card.Id;
+      int sourceId = card.SourceId;
+
+      if (useBatch && batched.TryGetValue(id, out BatchedRow? row))
+      {
+        resolved[i] = new ResolvedCard(
+          card,
+          id,
+          sourceId,
+          Read(() => card.CTN),
+          row.Zone,
+          row.OwnerIndex,
+          Read(() => card.ControllerIndex),
+          row.Name ?? Read(() => card.Name),
+          Read(() => card.IsAttacking),
+          Read(() => card.IsTapped),
+          new CardSelectable(
+            id, row.HasActions, row.IsSelectable, row.IsTargetable,
+            row.IsTargeted),
+          registry?.GetActions(id, sourceId) ?? []);
+        return;
+      }
+
+      // Fallback: today's full per-card reads, for cards no batch covered
+      // and for games where batching proved unfaithful.
+      CardSelectable? selectable = registry?.GetSelectable(id);
+      resolved[i] = new ResolvedCard(
+        card,
+        id,
+        sourceId,
+        Read(() => card.CTN),
+        Read(() => card.Zone?.Name),
+        Read(() => card.OwnerIndex),
+        Read(() => card.ControllerIndex),
+        Read(() => card.Name),
+        Read(() => card.IsAttacking),
+        Read(() => card.IsTapped),
+        selectable,
+        registry?.GetActions(id, sourceId) ?? []);
+    });
+
+    return resolved;
+  }
+
+  /// <summary>
+  /// Reads one batch per player zone. Zone and owner come from context, so
+  /// they cost no member reads.
+  /// </summary>
+  private Dictionary<int, BatchedRow> ReadZoneBatches(
+    Game game,
+    GameStateSnapshot snapshot)
+  {
+    var batched = new ConcurrentDictionary<int, BatchedRow>();
+
+    List<GamePlayer> players;
+    try
+    {
+      players = game.Players.ToList();
+    }
+    catch
+    {
+      return new Dictionary<int, BatchedRow>();
+    }
+
+    // Snapshot player index by account, so batch context maps to it without
+    // per-card owner reads. A user id that reads as 0 (seen live) never
+    // matches, so fall back to list position, which aligns with snapshot
+    // keys by construction.
+    var ownerByUser = new Dictionary<int, int>();
+    foreach (var entry in snapshot.Players)
+    {
+      int userId = Read(() => entry.Value.UserId);
+      ownerByUser[userId] = entry.Key;
+    }
+
+    var pairs = new List<(GamePlayer Player, int OwnerIndex, CardZone Zone)>();
+    for (int i = 0; i < players.Count; i++)
+    {
+      int userId = Read(() => players[i].UserId);
+      if (!ownerByUser.TryGetValue(userId, out int ownerIndex))
+        ownerIndex = i;
+
+      foreach (CardZone zone in s_batchZones)
+        pairs.Add((players[i], ownerIndex, zone));
+    }
+
+    int zonesOk = 0;
+    int rowsCollected = 0;
+    Parallel.For(0, pairs.Count, BatchOptions(pairs.Count), p =>
+    {
+      var (player, ownerIndex, zone) = pairs[p];
+      GameZone? resolved = Read(() => game.GetGameZone(player, zone));
+      if (resolved is null) return;
+
+      string? zoneName = Read(() => resolved.Name);
+      if (!resolved.TryGetBatchSnapshot(s_batchPaths, out var batch)
+          || batch is null)
+      {
+        return;
+      }
+
+      Interlocked.Increment(ref zonesOk);
+      for (int row = 0; row < batch.Count; row++)
+      {
+        int id = batch.GetInt(row, "Id");
+        if (id <= 0) continue;
+
+        if (batched.TryAdd(id, new BatchedRow(
+          zoneName,
+          ownerIndex,
+          batch.GetString(row, "Name", null!),
+          ParseBatchBool(batch, row, "Tag.CardViewModel.HasActions"),
+          ParseBatchBool(batch, row, "Tag.CardViewModel.IsSelectable"),
+          ParseBatchBool(batch, row, "Tag.CardViewModel.IsTargetable"),
+          ParseBatchBool(batch, row, "Tag.CardViewModel.IsTargeted"))))
+        {
+          Interlocked.Increment(ref rowsCollected);
+        }
+      }
+    });
+
+    // One line per game: silent batch failure is otherwise indistinguishable
+    // from an empty board.
+    if (_batchLogged.TryAdd(game.Id, 0))
+    {
+      logger.LogInformation(
+        "Zone-batch reads for MTGO game {GameId}: {Zones} zones, {Rows} rows.",
+        game.Id,
+        zonesOk,
+        rowsCollected);
+    }
+
+    return new Dictionary<int, BatchedRow>(batched);
+  }
+
+  private static bool ParseBatchBool(
+    BatchCollectionSnapshot batch, int row, string path) =>
+    bool.TryParse(batch.GetString(row, path, null!), out bool value) && value;
+
+  /// <summary>
+  /// Compares batch flags against the proven single-read path for a few
+  /// cards. Agreement means the batch endpoint is faithful for this game;
+  /// any divergence bypasses batching permanently.
+  /// </summary>
+  private bool ValidateBatch(
+    Game game,
+    CardActionRegistry registry,
+    Dictionary<int, BatchedRow> batched)
+  {
+    int compared = 0;
+    foreach (int id in batched.Keys.Take(3))
+    {
+      CardSelectable single;
+      try
+      {
+        single = registry.GetSelectable(id);
+      }
+      catch
+      {
+        return false;
+      }
+
+      BatchedRow row = batched[id];
+      if (single.HasActions != row.HasActions
+          || single.IsSelectable != row.IsSelectable
+          || single.IsTargetable != row.IsTargetable
+          || single.IsTargeted != row.IsTargeted)
+      {
+        return false;
+      }
+
+      compared++;
+    }
+
+    return compared > 0;
+  }
+
+
   private static AgentState BuildDocument(
     Game game,
     GameStateSnapshot snapshot,
     GamePrompt prompt,
     CardActionRegistry? registry,
+    IReadOnlyList<ResolvedCard> resolved,
     int? nonceOverride = null)
   {
-    var snapshotCards = snapshot.Cards.Values
-      .OrderBy(card => Read(() => card.Zone?.Name) ?? string.Empty)
-      .ThenBy(card => Read(() => card.OwnerIndex))
-      .ThenBy(card => card.Id)
-      .ToList();
-    var zonePositions = BuildZonePositions(game, snapshotCards);
-    var cards = snapshotCards
-      .Select(card => ProjectCard(card, zonePositions.GetValueOrDefault(card.Id)))
+    var zonePositions = BuildZonePositions(game, resolved);
+    var cards = resolved
       .OrderBy(card => card.Zone ?? string.Empty)
       .ThenBy(card => card.OwnerIndex)
-      .ThenBy(card => card.ZoneIndex ?? int.MaxValue)
+      .ThenBy(card => zonePositions.GetValueOrDefault(card.Id)?.Index ?? int.MaxValue)
       .ThenBy(card => card.Id)
+      .Select(card => ProjectCard(card, zonePositions.GetValueOrDefault(card.Id)))
       .ToList();
 
     var candidates = new List<ActionCandidate>();
@@ -257,22 +647,41 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       }
     }
 
-    var actions = new List<AgentAction>();
-    foreach (var candidate in candidates)
+    var projected = new AgentAction?[candidates.Count];
+    Parallel.For(0, candidates.Count, BatchOptions(candidates.Count), i =>
     {
-      var projected = TryProjectAction(actions.Count, candidate);
-      if (projected is not null)
-        actions.Add(projected);
+      projected[i] = TryProjectAction(i, candidates[i]);
+    });
+    var actions = new List<AgentAction>(candidates.Count);
+    foreach (var action in projected)
+    {
+      if (action is not null)
+        actions.Add(action);
     }
+    // Player click state comes from the duel scene's own player view models, so
+    // it reflects the same targetability pass that sets card flags. Matched on
+    // the game's own player index, which is the key the snapshot uses too.
+    var selectableByIndex = registry?
+      .GetPlayerSelectable()
+      .ToDictionary(entry => entry.PlayerIndex)
+      ?? [];
+
     var players = snapshot.Players
       .OrderBy(entry => entry.Key)
-      .Select(entry => new PlayerState(
-        entry.Key,
-        Read(() => entry.Value.UserId),
-        Read(() => entry.Value.Name) ?? string.Empty,
-        Read(() => entry.Value.Life),
-        Read(() => entry.Value.HasPriority)
-      ))
+      .Select(entry =>
+      {
+        var selectable = selectableByIndex.GetValueOrDefault(entry.Key);
+        return new PlayerState(
+          entry.Key,
+          Read(() => entry.Value.UserId),
+          Read(() => entry.Value.Name) ?? string.Empty,
+          Read(() => entry.Value.Life),
+          Read(() => entry.Value.HasPriority),
+          selectable?.IsTargetable ?? false,
+          selectable?.IsTargeted ?? false,
+          selectable?.IsActive ?? false
+        );
+      })
       .ToList();
 
     return new AgentState(
@@ -293,15 +702,22 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     Game game,
     GameStateSnapshot snapshot,
     GamePrompt prompt,
-    CardActionRegistry? registry)
+    CardActionRegistry? registry,
+    IReadOnlyList<ResolvedCard> resolved)
   {
     try
     {
-      var cards = snapshot.Cards.Values
-        .OrderBy(card => Read(() => card.Zone?.Name) ?? string.Empty)
-        .ThenBy(card => Read(() => card.Id))
-        .Select(card => ProjectNativeCard(card, registry))
+      var started = Stopwatch.GetTimestamp();
+      var ordered = resolved
+        .OrderBy(card => card.Zone ?? string.Empty)
+        .ThenBy(card => card.Id)
         .ToList();
+      var natives = new NativeCardSnapshot[ordered.Count];
+      Parallel.For(0, ordered.Count, BatchOptions(ordered.Count), i =>
+      {
+        natives[i] = ProjectNativeCard(ordered[i]);
+      });
+      IReadOnlyList<NativeCardSnapshot> cards = natives;
       var document = new NativeUiSnapshot(
         DateTimeOffset.UtcNow,
         game.Id,
@@ -309,10 +725,25 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         prompt.Nonce,
         Read(() => prompt.Text),
         registry?.Version ?? 0,
+        game.InteractionState.Mode.ToString(),
+        game.InteractionState.PromptBoxText,
         cards);
 
       lock (_writeLock)
         AgentStateStore.Write(_nativeUiOutputPath, document);
+
+      // These reads cross onto the client's UI thread, so the time they take
+      // is the thing to watch when the exporter falls behind.
+      var elapsed = Stopwatch.GetElapsedTime(started);
+      if (elapsed > s_slowNativeUiWrite)
+      {
+        logger.LogWarning(
+          "Native UI snapshot for MTGO game {GameId} took {ElapsedMs} ms "
+            + "for {CardCount} cards.",
+          game.Id,
+          (int)elapsed.TotalMilliseconds,
+          cards.Count);
+      }
     }
     catch (Exception exception)
     {
@@ -323,25 +754,19 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     }
   }
 
-  private static NativeCardSnapshot ProjectNativeCard(
-    GameCard card,
-    CardActionRegistry? registry)
+  private static NativeCardSnapshot ProjectNativeCard(ResolvedCard card)
   {
-    var actions = registry?.GetActions(card.Id, card.SourceId) ?? [];
-    var selectable = registry?.GetSelectable(card.Id, card.SourceId);
     return new NativeCardSnapshot(
       card.Id,
       card.SourceId,
-      Read(() => card.Name),
-      Read(() => card.Zone?.Name),
-      Read(() => card.IsAttacking),
-      Read(() => card.IsTapped),
-      selectable?.IsSelectable ?? false,
-      selectable?.IsTargetable ?? false,
-      selectable?.IsTargeted ?? false,
-      selectable?.Position?.X,
-      selectable?.Position?.Y,
-      actions
+      card.Name,
+      card.Zone,
+      card.IsAttacking,
+      card.IsTapped,
+      card.Selectable?.IsSelectable ?? false,
+      card.Selectable?.IsTargetable ?? false,
+      card.Selectable?.IsTargeted ?? false,
+      card.Actions
         .Select((action, index) => ProjectNativeAction(action, index))
         .ToList());
   }
@@ -374,16 +799,18 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       Read(() => Convert.ToInt32(rawAction?.AttackVictimId ?? 0)));
   }
 
-  private static CardState ProjectCard(GameCard card, ZonePosition? position)
+  private static CardState ProjectCard(
+    ResolvedCard card,
+    ZonePosition? position)
   {
     return new CardState(
       card.Id,
       card.SourceId,
-      card.CTN,
-      card.Name,
-      Read(() => card.Zone?.Name),
-      Read(() => card.OwnerIndex),
-      Read(() => card.ControllerIndex),
+      card.Ctn,
+      card.Name ?? string.Empty,
+      card.Zone,
+      card.OwnerIndex,
+      card.ControllerIndex,
       position?.Index,
       position?.NameOrdinal
     );
@@ -510,20 +937,23 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 
   private static Dictionary<int, ZonePosition> BuildZonePositions(
     Game game,
-    IReadOnlyList<GameCard> snapshotCards
+    IReadOnlyList<ResolvedCard> resolved
   )
   {
-    var positions = new Dictionary<int, ZonePosition>();
-    var groups = snapshotCards.GroupBy(card => new ZoneKey(
-      Read(() => card.Zone?.Name),
-      Read(() => card.OwnerIndex)
-    ));
+    var positions = new ConcurrentDictionary<int, ZonePosition>();
+    var groups = resolved.GroupBy(card => new ZoneKey(
+      card.Zone,
+      card.OwnerIndex
+    )).ToList();
 
-    foreach (var group in groups)
+    // Independent zone groups resolve in parallel; members within a group
+    // stay sequential.
+    Parallel.For(0, groups.Count, BatchOptions(groups.Count), g =>
     {
+      var group = groups[g];
       var representative = group
-        .Select(card => Read(() => game.GetGameCard(card.Id)))
-        .FirstOrDefault(card => card?.Zone is not null);
+        .FirstOrDefault(card => card.Zone is not null)
+        ?.Card;
       var orderedCards = representative is null
         ? []
         : Read(() => representative.Zone!.Cards.ToList()) ?? [];
@@ -538,9 +968,9 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         if (card.Id > 0)
           positions[card.Id] = new ZonePosition(index, ordinal);
       }
-    }
+    });
 
-    return positions;
+    return new Dictionary<int, ZonePosition>(positions);
   }
 
   private static List<GameAction> ReadPromptActions(GamePrompt prompt) =>
@@ -571,6 +1001,10 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     _snapshots.Clear();
     _lastUiRefreshes.Clear();
     _refreshQueued.Clear();
+    _refreshDirty.Clear();
+    _batchChecked.Clear();
+    _batchBypass.Clear();
+    _batchLogged.Clear();
   }
 
   private sealed record ActionCandidate(GameAction Action, ActionSource Source);

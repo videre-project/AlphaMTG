@@ -3,6 +3,8 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
+using System.Drawing;
+
 namespace AlphaMTG.MTGOAgent.UIA;
 
 /// <summary>
@@ -41,3 +43,25 @@ internal sealed record ActionExecution(
 /// The player's name, used only when <paramref name="CardId"/> is null.
 /// </param>
 internal sealed record SelectionTarget(int? CardId, string? PlayerName);
+
+/// <summary>
+/// Read-only geometry used for a pending dialog card click.
+/// </summary>
+internal sealed record DialogClickPreview(
+  string Name,
+  Rectangle Target,
+  IReadOnlyList<Rectangle> Occluders,
+  IReadOnlyList<Rectangle> VisibleAreas,
+  Point ClickPoint,
+  int CandidateCount);
+
+/// <summary>
+/// Read-only geometry for a battlefield card, including the area left after
+/// the other live battlefield card views have been subtracted.
+/// </summary>
+internal sealed record CardClickPreview(
+  int CardId,
+  Rectangle Target,
+  IReadOnlyList<Rectangle> Occluders,
+  IReadOnlyList<Rectangle> VisibleAreas,
+  Point? ClickPoint);

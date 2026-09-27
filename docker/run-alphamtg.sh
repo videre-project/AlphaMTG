@@ -31,6 +31,13 @@ echo "=== Building AlphaMTG ==="
 # version. Clear restore metadata so NuGet does not reuse a stale package
 # hash from the previous container iteration.
 rm -rf "$(dirname "$project")/obj"
+# Same-version SDK rebuilds also leave a stale extracted package in the
+# container-local NuGet cache. Remove only the MTGOSDK entries so the next
+# restore reinstalls them from the mounted local feed.
+nuget_packages="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
+rm -rf "$nuget_packages/mtgosdk" \
+  "$nuget_packages/mtgosdk.msbuild" \
+  "$nuget_packages/mtgosdk.win32"
 dotnet restore "$project" --configfile "$nuget_config" --force-evaluate --no-cache
 dotnet build "$project" -c Debug --no-restore
 
