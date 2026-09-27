@@ -38,6 +38,17 @@ internal static class TreeDumpCommand
       if (findName is not null)
         return FindByName(findName, rawView, includeAncestors);
 
+      // List top-level windows only, to locate pop-out dialogs without
+      // dumping the whole tree.
+      if (args.Contains("--windows"))
+        return ListWindows();
+
+      // Flat list of raw image elements with bounds. Card art in dialogs and
+      // zone lists often carries no name, so this finds candidate click
+      // targets by geometry instead of identity.
+      if (args.Contains("--find-images"))
+        return FindImages();
+
       using var automation = new UIA2Automation();
       var dump = new TreeDumpReport(DateTimeOffset.UtcNow);
 
@@ -108,6 +119,90 @@ internal static class TreeDumpCommand
   /// were, so a name-based lookup can be proven unambiguous rather than
   /// assumed to be.
   /// </summary>
+  private static int ListWindows()
+  {
+    using var automation = new UIA2Automation();
+    int[] processIds = System.Diagnostics.Process
+      .GetProcessesByName("MTGO")
+      .Select(process => process.Id)
+      .ToArray();
+
+    var windows = new List<object>();
+    foreach (AutomationElement window in automation
+      .GetDesktop()
+      .FindAllChildren(cf => cf.ByControlType(ControlType.Window)))
+    {
+      if (!processIds.Contains(window.FrameworkAutomationElement.ProcessId))
+        continue;
+
+      windows.Add(new
+      {
+        Name = UiaSession.GetName(window),
+        Class = UiaSession.GetClassName(window),
+        Bounds = FormatBounds(UiaSession.GetBounds(window))
+      });
+    }
+
+    Console.WriteLine(JsonSerializer.Serialize(windows, AgentJson.Options));
+    return 0;
+  }
+
+  private static int FindImages()
+  {
+    using var automation = new UIA2Automation();
+    int[] processIds = System.Diagnostics.Process
+      .GetProcessesByName("MTGO")
+      .Select(process => process.Id)
+      .ToArray();
+
+    var images = new List<object>();
+    foreach (AutomationElement window in automation
+      .GetDesktop()
+      .FindAllChildren(cf => cf.ByControlType(ControlType.Window)))
+    {
+      if (!processIds.Contains(window.FrameworkAutomationElement.ProcessId))
+        continue;
+
+      foreach (AutomationElement element in GetChildren(window, rawView: true))
+      {
+        if (!string.Equals(
+          UiaSession.GetControlType(element).ToString(),
+          "Image",
+          StringComparison.Ordinal))
+        {
+          continue;
+        }
+
+        string? bounds = FormatBounds(UiaSession.GetBounds(element));
+        if (bounds is null) continue;
+
+        var parents = new List<string>();
+        AutomationElement? parent = element.Parent;
+        for (int depth = 0; depth < 3 && parent is not null; depth++)
+        {
+          parents.Add(string.Join("|", new[]
+          {
+            UiaSession.GetControlType(parent).ToString(),
+            UiaSession.GetAutomationId(parent) ?? "-",
+            UiaSession.GetClassName(parent) ?? "-"
+          }));
+          parent = parent.Parent;
+        }
+
+        images.Add(new
+        {
+          AutomationId = UiaSession.GetAutomationId(element),
+          Bounds = bounds,
+          Parents = parents,
+          Patterns = UiaSession.GetPatterns(element)
+        });
+      }
+    }
+
+    Console.WriteLine(JsonSerializer.Serialize(images, AgentJson.Options));
+    return 0;
+  }
+
   private static int FindByName(
     string name,
     bool rawView,

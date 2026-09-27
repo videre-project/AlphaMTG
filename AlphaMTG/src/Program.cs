@@ -27,6 +27,7 @@ internal static class Program
       {
         case "uia": return UIACommand.Run(args[1..]);
         case "native-actions": return NativeActionsCommand.Run(args[1..]);
+        case "type-members": return TypeMembersCommand.Run(args[1..]);
         default:
           Console.Error.WriteLine($"Unknown command '{args[0]}'.\n{Usage}");
           return 2;
@@ -95,6 +96,8 @@ internal static class Program
       + "  uia           Drive MTGO through UI Automation.\n"
       + "                  AlphaMTG uia dump-tree [--raw] [--find-name TEXT]\n"
       + "                  AlphaMTG uia select ...\n"
+      + "  type-members   List the members a remote type exposes.\n"
+      + "                  AlphaMTG type-members --type NAME [--filter TEXT]\n"
       + "  native-actions\n"
       + "                Report what MTGO will accept a click on.\n"
       + "                  AlphaMTG native-actions --game-id ID [--card-id ID]\n"
