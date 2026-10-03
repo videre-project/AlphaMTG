@@ -72,6 +72,8 @@ internal static class Program
         services.GetRequiredService<ILoggerFactory>(),
         services.GetRequiredService<ILogger<Server>>())
         .GetAwaiter().GetResult());
+    builder.Services.AddSingleton<IDecisionModel>(
+      _ => DecisionModelResolver.Resolve());
 
     WebApplication app = builder.Build();
     // Plain HTTP only: no HTTPS redirection or certificates. The old
@@ -82,9 +84,8 @@ internal static class Program
   }
 
   /// <summary>
-  /// Scores a decision log against the configured model and prints where
-  /// it agrees with what was played. Runs before the web host so no client
-  /// or game is started.
+  /// Replays historical decisions using an explicit generic choice question.
+  /// These logs have no planner directive, so agreement is diagnostic only.
   /// </summary>
   private static async Task ReplayRunAsync(string logPath)
   {
@@ -98,7 +99,7 @@ internal static class Program
     {
       Console.WriteLine(
         $"  {outcome.Tick,3}  {(outcome.Correct ? "ok  " : "MISS")}  "
-        + $"margin {outcome.Margin,6:F2}  played {outcome.ExecutedActionId}, "
+        + $"confidence {outcome.Confidence,5:F2}  played {outcome.ExecutedActionId}, "
         + $"model {outcome.ModelActionId}  {outcome.Phase}  {outcome.Prompt}");
     }
   }

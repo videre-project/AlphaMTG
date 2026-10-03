@@ -9,11 +9,9 @@ using System.Text;
 namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 
 /// <summary>
-/// Renders a snapshot into the state text and per-action criteria a
-/// decision model consumes. Pure function of the snapshot: no model, no
-/// game, verifiable without either. Token budgets are small (a 1K model
-/// must fit state plus every candidate), so this stays terse by design;
-/// richness is the planner's job, not the executor's.
+/// Renders a historical snapshot into the state text and per-action criteria
+/// used by replay. Pure function of the snapshot. The local model has a 512
+/// token limit per question, so this stays terse by design.
 /// </summary>
 internal static class CandidateRendering
 {

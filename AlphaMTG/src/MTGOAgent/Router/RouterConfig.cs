@@ -17,5 +17,4 @@ internal sealed record RouterConfig(
   string Tokenizer,
   RouterInputs Inputs,
   string Output,
-  int MaxLength,
-  string Task);
+  int MaxLength);

@@ -7,11 +7,11 @@
 namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 
 /// <summary>
-/// One decidable option.
+/// One named outcome in a question's criteria.
 /// </summary>
-/// <param name="Id">The action id from the snapshot. Round-trips untouched.</param>
-/// <param name="Label">The short span scored in the [L] list. Usually the id.</param>
-/// <param name="Description">The meaning, scored in [DESCRIPTION]. Optional.</param>
+/// <param name="Id">Outcome key, returned unchanged in the answer.</param>
+/// <param name="Label">The short span scored in the [L] list. Usually the key.</param>
+/// <param name="Description">The meaning, supplied in [DESCRIPTION].</param>
 internal sealed record DecisionCandidate(
   string Id,
   string Label,

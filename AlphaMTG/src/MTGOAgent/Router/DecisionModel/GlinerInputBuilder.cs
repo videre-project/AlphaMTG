@@ -10,8 +10,9 @@ using AlphaMTG.MTGOAgent.Router.Tokenizer;
 namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 
 /// <summary>
-/// Builds one span-extractor input from state plus candidates:
-/// <c>[CLS] ( [P] task [DESCRIPTION] id: desc ... ( [L] id ... ) )
+/// Builds one span-extractor input from state plus a question's instructions
+/// and criteria:
+/// <c>[CLS] ( [P] instructions [DESCRIPTION] id: desc ... ( [L] id ... ) )
 /// [SEP_TEXT] state [SEP]</c>, recording each [L] span position for the
 /// gather. Mirrors the transform the export was traced against; the wire
 /// proof is token-id equality against it, kept as a standing check.
@@ -26,15 +27,15 @@ internal static class GlinerInputBuilder
 
   public static BuiltInput Build(
     ITokenizer tokenizer,
-    string task,
+    string instructions,
     string state,
     IReadOnlyList<DecisionCandidate> candidates,
     int maxLength)
   {
     // Schema pieces are tokenized whole, exactly as the transform builds
-    // them: the task plus all descriptions form one piece, labels stay
+    // them: the instructions plus all descriptions form one piece, labels stay
     // bare. Text is lowercased word-wise upstream of tokenization.
-    var block = new StringBuilder(task);
+    var block = new StringBuilder(instructions);
     foreach (DecisionCandidate candidate in candidates)
     {
       if (!string.IsNullOrEmpty(candidate.Description))
@@ -73,7 +74,7 @@ internal static class GlinerInputBuilder
 
     if (ids.Count > maxLength)
     {
-      throw new InvalidOperationException(
+      throw new ArgumentException(
         $"Decision input is {ids.Count} tokens, over the {maxLength} limit.");
     }
 

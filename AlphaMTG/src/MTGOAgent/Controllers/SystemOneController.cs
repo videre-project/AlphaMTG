@@ -1,0 +1,188 @@
+/** @file
+  Copyright (c) 2026, Cory Bennett. All rights reserved.
+  SPDX-License-Identifier: Apache-2.0
+**/
+
+using System.Text.Json;
+using System.Globalization;
+
+using Microsoft.AspNetCore.Mvc;
+
+using AlphaMTG.MTGOAgent.Controllers.Models;
+using AlphaMTG.MTGOAgent.Router.DecisionModel;
+
+namespace AlphaMTG.MTGOAgent.Controllers;
+
+/// <summary>
+/// Local SystemOne-style decisions using the mounted gliner-decide weights.
+/// Each question receives its own instructions and criteria against one state.
+/// </summary>
+[ApiController]
+internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
+{
+  [HttpPost("/v1/systemone")]
+  public IActionResult Decide([FromBody] SystemOneRequest? request)
+  {
+    try
+    {
+      if (request is null)
+        throw new ArgumentException("A request body is required.");
+      if (request.Model != "gliner-decide")
+        throw new ArgumentException("model must be 'gliner-decide'.");
+      string state = RenderState(request.State);
+      IReadOnlyDictionary<string, DecisionQuestion> questions =
+        ParseQuestions(request.Questions);
+      IReadOnlyDictionary<string, DecisionAnswer> answers =
+        model.Decide(state, questions);
+      return Ok(new { model = request.Model, answers });
+    }
+    catch (ArgumentException exception) when (
+      exception.Message.StartsWith("Decision input is ", StringComparison.Ordinal))
+    {
+      return UnprocessableEntity(new { error = exception.Message });
+    }
+    catch (ArgumentException exception)
+    {
+      return BadRequest(new { error = exception.Message });
+    }
+    catch (InvalidOperationException exception) when (
+      exception.Message.StartsWith("No decision model configured", StringComparison.Ordinal))
+    {
+      return StatusCode(503, new { error = exception.Message });
+    }
+  }
+
+  private static string RenderState(JsonElement state)
+  {
+    string rendered = state.ValueKind switch
+    {
+      JsonValueKind.String => state.GetString()!,
+      JsonValueKind.Object when state.EnumerateObject().Any() => state.GetRawText(),
+      JsonValueKind.Array when state.EnumerateArray().Any() => state.GetRawText(),
+      JsonValueKind.Object or JsonValueKind.Array => string.Empty,
+      _ => throw new ArgumentException("state must be a string, object, or array."),
+    };
+    if (string.IsNullOrWhiteSpace(rendered))
+      throw new ArgumentException("state must be nonempty.");
+    return rendered;
+  }
+
+  private static IReadOnlyDictionary<string, DecisionQuestion> ParseQuestions(
+    Dictionary<string, SystemOneQuestionRequest>? requests)
+  {
+    if (requests is null || requests.Count == 0)
+      throw new ArgumentException("questions must contain at least one named question.");
+
+    var questions = new Dictionary<string, DecisionQuestion>(requests.Count);
+    foreach ((string name, SystemOneQuestionRequest request) in requests)
+    {
+      if (string.IsNullOrWhiteSpace(name))
+        throw new ArgumentException("Question names must be nonempty.");
+      if (request is null || string.IsNullOrWhiteSpace(request.Instructions))
+        throw new ArgumentException($"Question '{name}' needs instructions.");
+
+      IReadOnlyList<DecisionCandidate> criteria = request.Type switch
+      {
+        "noul" => ParseNoul(request.Criteria),
+        "choice" => ParseChoice(request.Criteria),
+        "score" => ParseScore(request.Criteria),
+        _ => throw new ArgumentException(
+          $"Question '{name}' has unsupported type '{request.Type}'."),
+      };
+      questions.Add(name, new DecisionQuestion(
+        request.Type!, request.Instructions, criteria));
+    }
+    return questions;
+  }
+
+  private static IReadOnlyList<DecisionCandidate> ParseNoul(JsonElement criteria)
+  {
+    if (criteria.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+      return new[]
+      {
+        new DecisionCandidate("true", "true", "Yes"),
+        new DecisionCandidate("false", "false", "No"),
+      };
+    if (criteria.ValueKind != JsonValueKind.Object
+      || criteria.EnumerateObject().Count() != 2
+      || !criteria.TryGetProperty("true", out JsonElement yes)
+      || !criteria.TryGetProperty("false", out JsonElement no))
+      throw new ArgumentException(
+        "noul criteria must have exactly 'true' and 'false' descriptions.");
+    return new[]
+    {
+      new DecisionCandidate("true", "true", Description(yes)),
+      new DecisionCandidate("false", "false", Description(no)),
+    };
+  }
+
+  private static IReadOnlyList<DecisionCandidate> ParseChoice(JsonElement criteria)
+  {
+    if (criteria.ValueKind != JsonValueKind.Object)
+      throw new ArgumentException("choice criteria must be an object.");
+    var candidates = new List<DecisionCandidate>();
+    foreach (JsonProperty option in criteria.EnumerateObject())
+    {
+      if (string.IsNullOrWhiteSpace(option.Name))
+        throw new ArgumentException("choice option names must be nonempty.");
+      candidates.Add(new DecisionCandidate(
+        option.Name, option.Name, Description(option.Value)));
+    }
+    ValidateCount(candidates.Count);
+    if (candidates.Select(item => item.Id).Distinct().Count() != candidates.Count)
+      throw new ArgumentException("choice option names must be unique.");
+    return candidates;
+  }
+
+  private static IReadOnlyList<DecisionCandidate> ParseScore(JsonElement criteria)
+  {
+    var candidates = new List<DecisionCandidate>();
+    if (criteria.ValueKind == JsonValueKind.Array)
+    {
+      foreach (JsonElement level in criteria.EnumerateArray())
+        AddLevel(candidates, Description(level));
+    }
+    else if (criteria.ValueKind == JsonValueKind.Object)
+    {
+      var levels = new List<(int Key, string Description)>();
+      foreach (JsonProperty level in criteria.EnumerateObject())
+      {
+        if (!int.TryParse(level.Name, NumberStyles.Integer,
+          CultureInfo.InvariantCulture, out int key))
+          throw new ArgumentException(
+            "score object criteria must have numeric keys.");
+        levels.Add((key, Description(level.Value)));
+      }
+      if (levels.Select(level => level.Key).Distinct().Count() != levels.Count)
+        throw new ArgumentException("score level keys must be unique.");
+      foreach (var level in levels.OrderBy(level => level.Key))
+        AddLevel(candidates, level.Description);
+    }
+    else
+      throw new ArgumentException(
+        "score criteria must be an ordered array or numeric-keyed object.");
+    ValidateCount(candidates.Count);
+    return candidates;
+  }
+
+  private static void AddLevel(List<DecisionCandidate> candidates,
+    string description)
+  {
+    string id = candidates.Count.ToString(CultureInfo.InvariantCulture);
+    candidates.Add(new DecisionCandidate(id, id, description));
+  }
+
+  private static string Description(JsonElement value)
+  {
+    if (value.ValueKind != JsonValueKind.String
+      || string.IsNullOrWhiteSpace(value.GetString()))
+      throw new ArgumentException("Every criterion needs a nonempty description.");
+    return value.GetString()!;
+  }
+
+  private static void ValidateCount(int count)
+  {
+    if (count is < 2 or > 255)
+      throw new ArgumentException("choice and score require 2 to 255 criteria.");
+  }
+}

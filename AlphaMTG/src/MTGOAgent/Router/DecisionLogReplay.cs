@@ -14,10 +14,9 @@ namespace AlphaMTG.MTGOAgent.Router;
 /// <summary>
 /// Replays a decision log through a decision model. The tick is rebuilt
 /// into the same <see cref="AgentState"/> the executor sees and rendered
-/// by the same <see cref="CandidateRendering"/>, so a scored log measures
-/// the production input rather than a replay-only approximation of it.
-/// Ticks the model could not score are failures, not skips: a log that
-/// cannot be reproduced is a finding.
+/// by the same <see cref="CandidateRendering"/>. Historical logs have no
+/// planner directive, so this only diagnoses an unconditioned action question;
+/// it does not measure how well the model follows a planner's instruction.
 /// </summary>
 internal static class DecisionLogReplay
 {
@@ -35,11 +34,26 @@ internal static class DecisionLogReplay
       AgentState state = RebuiltState(record);
       IReadOnlyList<DecisionCandidate> candidates =
         CandidateRendering.RenderCandidates(state);
-      IReadOnlyList<ScoredCandidate> scored = candidates.Count == 0
-        ? Array.Empty<ScoredCandidate>()
-        : model.Score(CandidateRendering.RenderState(state), candidates);
-
-      int chosen = scored.Count == 0 ? -1 : int.Parse(scored[0].Id);
+      string? choice = null;
+      double confidence = 0;
+      if (candidates.Count == 1)
+      {
+        choice = candidates[0].Id;
+        confidence = 1;
+      }
+      else if (candidates.Count > 1)
+      {
+        var questions = new Dictionary<string, DecisionQuestion>
+        {
+          ["next_action"] = new(
+            "choice", "Which offered action should be taken next?", candidates),
+        };
+        DecisionAnswer answer = model.Decide(
+          CandidateRendering.RenderState(state), questions)["next_action"];
+        choice = answer.Choice;
+        confidence = answer.Confidence;
+      }
+      int chosen = choice is null ? -1 : int.Parse(choice);
       outcomes.Add(new ReplayOutcome(
         tick++,
         record.Phase,
@@ -47,7 +61,7 @@ internal static class DecisionLogReplay
         record.Executed.ActionId,
         chosen,
         chosen == record.Executed.ActionId,
-        scored.Count < 2 ? 0d : scored[0].Score - scored[1].Score));
+        confidence));
     }
     return outcomes;
   }

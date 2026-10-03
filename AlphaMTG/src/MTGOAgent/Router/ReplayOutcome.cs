@@ -15,7 +15,7 @@ namespace AlphaMTG.MTGOAgent.Router;
 /// <param name="ExecutedActionId">Action id the tick executed.</param>
 /// <param name="ModelActionId">Action id the model ranked first.</param>
 /// <param name="Correct">Whether the two agree.</param>
-/// <param name="Margin">Top logit minus runner-up; zero for a lone candidate.</param>
+/// <param name="Confidence">Top probability minus runner-up; one for a lone candidate.</param>
 internal sealed record ReplayOutcome(
   int Tick,
   string Phase,
@@ -23,4 +23,4 @@ internal sealed record ReplayOutcome(
   int ExecutedActionId,
   int ModelActionId,
   bool Correct,
-  double Margin);
+  double Confidence);

@@ -3,13 +3,6 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-using System.IO;
-using System.Text.Json;
-
-using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.Tensors;
-
-
 namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 
 /// <summary>
@@ -35,8 +28,8 @@ internal static class DecisionModelResolver
       // Nothing loaded.
     }
 
-    public IReadOnlyList<ScoredCandidate> Score(
-      string state, IReadOnlyList<DecisionCandidate> candidates)
+    public IReadOnlyDictionary<string, DecisionAnswer> Decide(
+      string state, IReadOnlyDictionary<string, DecisionQuestion> questions)
     {
       throw new InvalidOperationException(
         "No decision model configured: set ALPHAMTG_ROUTER_WEIGHTS to a "
