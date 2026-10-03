@@ -4,8 +4,9 @@
 **/
 
 using System.Drawing;
+using AlphaMTG.MTGOAgent.UIA;
 
-namespace AlphaMTG.MTGOAgent.UIA;
+namespace AlphaMTG.MTGOAgent.UIA.Actions;
 
 /// <summary>
 /// Identifies one target within one target set of an action.
@@ -13,6 +14,13 @@ namespace AlphaMTG.MTGOAgent.UIA;
 /// <param name="TargetSetId">The <c>TargetSetState.Index</c> to fill.</param>
 /// <param name="TargetId">The <c>GameObjectState.Id</c> to click.</param>
 internal sealed record TargetSelection(int TargetSetId, int TargetId);
+
+/// <summary>
+/// Assigns one distributed amount to one target of a distributing action.
+/// </summary>
+/// <param name="TargetId">The <c>GameObjectState.Id</c> of the target.</param>
+/// <param name="Value">The amount to assign to that target.</param>
+internal sealed record DistributionInput(int TargetId, int Value);
 
 /// <summary>
 /// Describes what a single executor step actually clicked.
@@ -43,17 +51,6 @@ internal sealed record ActionExecution(
 /// The player's name, used only when <paramref name="CardId"/> is null.
 /// </param>
 internal sealed record SelectionTarget(int? CardId, string? PlayerName);
-
-/// <summary>
-/// Read-only geometry used for a pending dialog card click.
-/// </summary>
-internal sealed record DialogClickPreview(
-  string Name,
-  Rectangle Target,
-  IReadOnlyList<Rectangle> Occluders,
-  IReadOnlyList<Rectangle> VisibleAreas,
-  Point ClickPoint,
-  int CandidateCount);
 
 /// <summary>
 /// Read-only geometry for a battlefield card, including the area left after

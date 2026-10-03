@@ -11,6 +11,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Execution is driven through MTGO's UI Automation tree on purpose: it
          lets MTGO's own state machine own target legality, sequencing, and
          completion instead of this client re-implementing them. -->
@@ -22,9 +26,5 @@
                       Version="*" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime"
                       Version="1.30.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging"
-                      Version="10.0.3" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Console"
-                      Version="10.0.3" />
   </ItemGroup>
 </Project>

@@ -4,14 +4,6 @@ set -euo pipefail
 project=/workspace/AlphaMTG/AlphaMTG.csproj
 nuget_config=/workspace/AlphaMTG/NuGet.config
 output=/workspace/AlphaMTG/bin/Debug/net10.0-windows
-alphamtg_pid=
-
-cleanup() {
-  if [[ -n "$alphamtg_pid" ]]; then
-    kill "$alphamtg_pid" 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT
 
 # Keep the current directory at the workspace root so BotClient's
 # DotEnv.LoadFile() resolves /workspace/.env from the bind mount.
@@ -41,7 +33,10 @@ rm -rf "$nuget_packages/mtgosdk" \
 dotnet restore "$project" --configfile "$nuget_config" --force-evaluate --no-cache
 dotnet build "$project" -c Debug --no-restore
 
-# Run the Windows-targeted assembly with the Windows .NET runtime inside Wine.
+# AlphaMTG is a stateful server: this entrypoint builds it, then runs it
+# in the foreground. It serves HTTP (ALPHAMTG_HTTP_PORT, default 8080)
+# and, when stdin is piped (docker exec -i), MCP over stdio.
+echo "=== Starting AlphaMTG ==="
 win_dotnet=/home/wine/windows-dotnet/dotnet.exe
 win_output=$(winepath -w "$output")
 win_dll="${win_output}\\AlphaMTG.dll"
@@ -49,9 +44,7 @@ win_dll="${win_output}\\AlphaMTG.dll"
 # Wine sets WINDIR but not SystemRoot; .NET and MTGOSDK expect both.
 export SystemRoot=C:\\windows
 export DOTNET_ROOT='Z:\home\wine\windows-dotnet'
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
 
-echo "=== Starting AlphaMTG ==="
-wine "$win_dotnet" "$win_dll" &
-alphamtg_pid=$!
-
-wait "$alphamtg_pid"
+exec wine "$win_dotnet" "$win_dll"

@@ -46,10 +46,18 @@ USER wine
 # replace or downgrade the runtime used to launch AlphaMTG.
 RUN cp -a '/home/wine/.wine/drive_c/Program Files/dotnet' /home/wine/windows-dotnet
 
+# ASP.NET Core (Kestrel) needs the Windows ASP.NET runtime next to the
+# desktop runtime. Winetricks does not provide it; lay it down the way the
+# Tracker image does.
+ARG DOTNET_RUNTIME_VERSION=10.0.12
+RUN curl -fsSL --output /tmp/aspnetcore-runtime.zip \
+      "https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/${DOTNET_RUNTIME_VERSION}/aspnetcore-runtime-${DOTNET_RUNTIME_VERSION}-win-x64.zip" \
+    && unzip -qo /tmp/aspnetcore-runtime.zip -d /home/wine/windows-dotnet \
+    && rm /tmp/aspnetcore-runtime.zip
+
 USER root
 
 COPY --chmod=755 docker/run-alphamtg.sh /usr/local/bin/run-alphamtg
-COPY --chmod=755 docker/run-alphamtg-uia.sh /usr/local/bin/run-alphamtg-uia
 
 USER wine
 WORKDIR /workspace

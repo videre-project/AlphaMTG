@@ -3,15 +3,23 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-using System;
-using System.Threading;
-using System.Threading.Tasks;
+using System.IO;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.ApplicationParts;
+using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 using AlphaMTG.MTGOAgent;
-using AlphaMTG.MTGOAgent.Diagnostics;
-using AlphaMTG.MTGOAgent.UIA;
+using AlphaMTG.MTGOAgent.Router;
+using AlphaMTG.MTGOAgent.Router.DecisionModel;
 
 
 namespace AlphaMTG;
@@ -19,99 +27,91 @@ namespace AlphaMTG;
 internal static class Program
 {
   [STAThread]
-  public static async Task<int> Main(string[] args)
+  public static async Task Main(string[] args)
   {
-    if (args.Length > 0)
+    if (args.Length == 2 && args[0] == "--replay")
     {
-      switch (args[0])
-      {
-        case "uia": return UIACommand.Run(args[1..]);
-        case "native-actions": return NativeActionsCommand.Run(args[1..]);
-        case "type-members": return TypeMembersCommand.Run(args[1..]);
-        default:
-          Console.Error.WriteLine($"Unknown command '{args[0]}'.\n{Usage}");
-          return 2;
-      }
+      await ReplayRunAsync(args[1]);
+      return;
     }
 
-    if (!AgentInstanceLock.TryAcquire(
-          AgentInstanceLock.DefaultPath,
-          out AgentInstanceLock? acquiredLock,
-          out string? holder)
-        || acquiredLock is null)
-    {
-      Console.Error.WriteLine(
-        "Could not lock the AlphaMTG game-state files "
-          + $"({AgentInstanceLock.DefaultPath}: {holder}). "
-          + "Choose a different ALPHAMTG_GAME_STATE_PATH to write a separate "
-          + "state file. Diagnostic commands such as 'uia' and "
-          + "'native-actions' are unaffected and may still be run.");
-      return 3;
-    }
+    WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
-    using AgentInstanceLock instanceLock = acquiredLock;
-    using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
+    builder.Logging.ClearProviders();
+    builder.Logging.AddSimpleConsole(options =>
     {
-      builder
-        .AddSimpleConsole(options =>
-        {
-          options.SingleLine = true;
-          options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
-        })
-        .SetMinimumLevel(LogLevel.Information);
+      options.SingleLine = true;
+      options.TimestampFormat = "HH:mm:ss ";
     });
+    builder.Logging.SetMinimumLevel(LogLevel.Information);
 
-    ILogger logger = loggerFactory.CreateLogger("AlphaMTG");
-    logger.LogInformation("Starting AlphaMTG.");
+    builder.Services.AddControllers()
+      .AddJsonOptions(options =>
+      {
+        options.JsonSerializerOptions.DefaultIgnoreCondition =
+          JsonIgnoreCondition.WhenWritingNull;
+        options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+        options.JsonSerializerOptions.PropertyNamingPolicy =
+          JsonNamingPolicy.CamelCase;
+      })
+      .ConfigureApplicationPartManager(manager =>
+      {
+        // Controllers stay internal like the rest of the agent; discover
+        // them explicitly instead of widening the assembly's surface.
+        manager.FeatureProviders.Add(new InternalControllerFeatureProvider());
+      });
 
-    var client = await BotClient.StartAsync(
-      loggerFactory,
-      logger,
-      logOn: true
-    );
+    int port = 8080;
+    string? portText = Environment.GetEnvironmentVariable("ALPHAMTG_HTTP_PORT");
+    if (!string.IsNullOrWhiteSpace(portText) && int.TryParse(portText, out int parsed))
+      port = parsed;
+    builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
-    using var gameStateExporter = new GameStateExporter(
-      logger,
-      client.CurrentUser.Id
-    );
-    gameStateExporter.Start();
+    builder.Services.AddSingleton<Server>(services =>
+      Server.StartAsync(
+        services.GetRequiredService<ILoggerFactory>(),
+        services.GetRequiredService<ILogger<Server>>())
+        .GetAwaiter().GetResult());
 
-    using var nativeActionTest = CreateNativeActionTestController(logger);
-    nativeActionTest?.Start();
-
-    logger.LogInformation(
-      "MTGO client started. Waiting for shutdown."
-    );
-
-    // Keep the process and MTGO client alive until the container is stopped.
-    await Task.Delay(Timeout.InfiniteTimeSpan);
-    GC.KeepAlive(client);
-    return 0;
+    WebApplication app = builder.Build();
+    // Plain HTTP only: no HTTPS redirection or certificates. The old
+    // TcpListener transport behaved the same way.
+    app.MapGet("/healthz", () => Results.Text("ok", "text/plain"));
+    app.MapControllers();
+    await app.RunAsync();
   }
 
-  private const string Usage =
-    "Usage: AlphaMTG [command]\n"
-      + "\n"
-      + "  (no command)  Run the agent. Only one instance may run at a time.\n"
-      + "  uia           Drive MTGO through UI Automation.\n"
-      + "                  AlphaMTG uia dump-tree [--raw] [--find-name TEXT]\n"
-      + "                  AlphaMTG uia select ...\n"
-      + "  type-members   List the members a remote type exposes.\n"
-      + "                  AlphaMTG type-members --type NAME [--filter TEXT]\n"
-      + "  native-actions\n"
-      + "                Report what MTGO will accept a click on.\n"
-      + "                  AlphaMTG native-actions --game-id ID [--card-id ID]\n"
-      + "                                    [--with-position]\n";
-
-  private static NativeActionTestController? CreateNativeActionTestController(
-    ILogger logger)
+  /// <summary>
+  /// Scores a decision log against the configured model and prints where
+  /// it agrees with what was played. Runs before the web host so no client
+  /// or game is started.
+  /// </summary>
+  private static async Task ReplayRunAsync(string logPath)
   {
-    string? enabled = Environment.GetEnvironmentVariable(
-      "ALPHAMTG_ENABLE_NATIVE_ACTION_TEST");
-    return string.Equals(enabled, "1", StringComparison.Ordinal)
-        || string.Equals(enabled, "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(enabled, "yes", StringComparison.OrdinalIgnoreCase)
-      ? new NativeActionTestController(logger)
-      : null;
+    using IDecisionModel model = DecisionModelResolver.Resolve();
+    IReadOnlyList<ReplayOutcome> outcomes = DecisionLogReplay.Run(logPath, model);
+
+    int correct = outcomes.Count(outcome => outcome.Correct);
+    Console.WriteLine($"{Path.GetFileName(logPath)}: "
+      + $"{correct}/{outcomes.Count} ticks match");
+    foreach (ReplayOutcome outcome in outcomes)
+    {
+      Console.WriteLine(
+        $"  {outcome.Tick,3}  {(outcome.Correct ? "ok  " : "MISS")}  "
+        + $"margin {outcome.Margin,6:F2}  played {outcome.ExecutedActionId}, "
+        + $"model {outcome.ModelActionId}  {outcome.Phase}  {outcome.Prompt}");
+    }
+  }
+
+  /// <summary>
+  /// Discovers internal controllers without making them public.
+  /// </summary>
+  private sealed class InternalControllerFeatureProvider
+    : ControllerFeatureProvider
+  {
+    protected override bool IsController(TypeInfo typeInfo) =>
+      typeInfo is { IsClass: true, IsAbstract: false, IsGenericType: false }
+      && (typeInfo.Name.EndsWith("Controller", StringComparison.Ordinal)
+        || base.IsController(typeInfo));
   }
 }

@@ -19,7 +19,8 @@ internal static class BotClient
   public static async Task<Client> StartAsync(
     ILoggerFactory loggerFactory,
     ILogger logger,
-    bool logOn
+    bool logOn,
+    bool closeOnExit = true
   )
   {
     while (!await Client.IsOnline())
@@ -32,7 +33,7 @@ internal static class BotClient
       new ClientOptions
       {
         CreateProcess = true,
-        CloseOnExit = true,
+        CloseOnExit = closeOnExit,
         AcceptEULAPrompt = true
       },
       loggerFactory: loggerFactory

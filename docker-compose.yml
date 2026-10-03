@@ -16,10 +16,13 @@ services:
     stdin_open: true
     tty: true
     working_dir: /workspace
+    ports:
+      - "127.0.0.1:${ALPHAMTG_HTTP_PORT:-8080}:8080"
     tmpfs:
       - /tmp/runtime-dir:uid=1000,gid=1000,mode=0700
     environment:
       DISPLAY: ${DISPLAY:-}
+      ALPHAMTG_ROUTER_WEIGHTS: /models/gliner-decide
       WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-wayland-0}
       XDG_RUNTIME_DIR: /tmp/runtime-dir
       WINEDEBUG: -all
@@ -33,6 +36,9 @@ services:
       # MTGOSDK's documented local package feed. The NuGet.config path is
       # relative so it resolves to this mount inside the container.
       - ../MTGOSDK/packages:/MTGOSDK/packages:ro
+      # Decision-model weights, local to the project. Replace the directory
+      # to swap or fine-tune; ALPHAMTG_ROUTER_WEIGHTS points the router at it.
+      - ./models:/models:ro
       - alphamtg-wine-data:/home/wine/.wine
       - ${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set}/${WAYLAND_DISPLAY:-wayland-0}:/tmp/runtime-dir/${WAYLAND_DISPLAY:-wayland-0}
       - /tmp/.X11-unix:/tmp/.X11-unix
