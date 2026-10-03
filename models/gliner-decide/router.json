@@ -1,0 +1,8 @@
+{
+  "model": "decide.onnx",
+  "tokenizer": "tokenizer.json",
+  "inputs": { "ids": "input_ids", "mask": "attention_mask", "positions": "label_positions" },
+  "output": "logits",
+  "maxLength": 512,
+  "task": "action"
+}
