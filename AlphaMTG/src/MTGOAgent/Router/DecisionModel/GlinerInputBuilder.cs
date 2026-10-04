@@ -12,10 +12,10 @@ namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 /// <summary>
 /// Builds one span-extractor input from state plus a question's instructions
 /// and criteria:
-/// <c>[CLS] ( [P] instructions [DESCRIPTION] id: desc ... ( [L] id ... ) )
-/// [SEP_TEXT] state [SEP]</c>, recording each [L] span position for the
-/// gather. Mirrors the transform the export was traced against; the wire
-/// proof is token-id equality against it, kept as a standing check.
+/// <c>[CLS] ( [P] instructions [DESCRIPTION] label: desc ... ( [L] label ... ) )
+/// [SEP_TEXT] Instruction: instructions State: state [SEP]</c>, recording
+/// each [L] span position for the gather. Including the instruction in the
+/// classified text improved the recorded AlphaMTG goal-to-action cases.
 /// </summary>
 internal static class GlinerInputBuilder
 {
@@ -39,7 +39,7 @@ internal static class GlinerInputBuilder
     foreach (DecisionCandidate candidate in candidates)
     {
       if (!string.IsNullOrEmpty(candidate.Description))
-        block.Append($" [DESCRIPTION] {candidate.Id}: {candidate.Description}");
+        block.Append($" [DESCRIPTION] {candidate.Label}: {candidate.Description}");
     }
     var pieces = new List<string> { "(", "[P]", block.ToString(), "(" };
     foreach (DecisionCandidate candidate in candidates)
@@ -67,9 +67,12 @@ internal static class GlinerInputBuilder
       }
       ids.AddRange(tokenizer.Encode(piece));
     }
-    // State text goes through the word splitter (lower-cased, punctuation
-    // split) while schema pieces keep case and punctuation glued.
-    foreach (string word in WordSplitter.Split(state))
+    // The local classifier uses the text as evidence. Put the caller's
+    // instruction there so it can compare the requested goal with the state.
+    // This is per question because a SystemOne request may contain several
+    // questions against the same shared state.
+    string decisionText = $"Instruction: {instructions}\nState: {state}";
+    foreach (string word in WordSplitter.Split(decisionText))
       ids.AddRange(tokenizer.Encode(word));
 
     if (ids.Count > maxLength)

@@ -208,7 +208,7 @@ internal static class ActionProjection
 
 
   internal static List<GameAction> ReadPromptActions(GamePrompt prompt) =>
-    (Try<List<GameAction>>(() => prompt.Options.Values
+    (Try<List<GameAction>>(() => prompt.GameActions.Values
       .SelectMany(actions => actions)
       .Where(action => action is not null)
       .ToList()) ?? new List<GameAction>());

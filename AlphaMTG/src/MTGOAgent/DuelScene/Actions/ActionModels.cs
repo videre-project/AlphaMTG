@@ -6,6 +6,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+using MTGOSDK.API.Play.Games.Controls;
+
 
 namespace AlphaMTG.MTGOAgent;
 
@@ -22,7 +24,13 @@ internal sealed record AgentAction(
   NumberRange? DistributionTotal = null
 );
 
-internal sealed record ActionSource(string Type, int? CardId = null);
+internal sealed record ActionSource(
+  string Type,
+  int? CardId = null,
+  PromptControlId? ControlId = null,
+  long? ClientRevision = null,
+  string? ButtonType = null,
+  string? Color = null);
 
 internal sealed record TargetSetState(
   int Index,

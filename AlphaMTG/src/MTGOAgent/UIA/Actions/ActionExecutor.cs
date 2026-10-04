@@ -10,6 +10,7 @@ using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
 
 using MTGOSDK.API.Play.Games;
+using MTGOSDK.API.Play.Games.Controls;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.Core.Reflection;
 using static MTGOSDK.Core.Reflection.DLRWrapper;
@@ -116,6 +117,7 @@ internal sealed class ActionExecutor(
     {
       "prompt" => ExecutePromptAction(state, action),
       "card" => ExecuteCardAction(state, action),
+      "control" => ExecutePromptControl(state, action),
       _ => throw new InvalidOperationException(
         $"Action {actionId} has unsupported source "
           + $"'{action.Source.Type}'.")
@@ -208,6 +210,40 @@ internal sealed class ActionExecutor(
   private ActionExecution ExecutePromptAction(AgentState state, AgentAction action) =>
     ExecuteControl(action.Name, action.Id, "prompt-action",
       action.Source.CardId);
+
+  private ActionExecution ExecutePromptControl(AgentState state, AgentAction action)
+  {
+    ActionSource source = action.Source;
+    if (source.ControlId is not PromptControlId controlId
+      || source.ClientRevision is not long revision
+      || string.IsNullOrWhiteSpace(source.ButtonType))
+      throw new ArgumentException("The prompt control has no captured identity.");
+
+    GamePrompt livePrompt = _game.Prompt
+      ?? throw new InvalidOperationException("The game has no live prompt.");
+    PromptOptionsSnapshot live = livePrompt.CaptureOptions();
+    if (live.PromptNonce != state.Nonce
+      || live.ClientRevision != revision)
+      throw new InvalidOperationException(
+        "The prompt controls changed. Re-read the state before acting.");
+
+    PromptControl control = live.Options.Values
+      .SelectMany(group => group)
+      .OfType<PromptControl>()
+      .SingleOrDefault(candidate => candidate.Id == controlId
+        && candidate.Name == action.Name
+        && candidate.ButtonType == source.ButtonType
+        && candidate.Color == source.Color
+        && candidate.Enabled)
+      ?? throw new InvalidOperationException(
+        $"The prompt control '{action.Name}' is no longer available.");
+    if (!_registry.ClickPromptButton(control))
+      throw new InvalidOperationException(
+        $"The prompt control '{action.Name}' changed before it could be clicked.");
+    return new ActionExecution(
+      action.Id, "prompt-control", action.Name, null,
+      "Selected the prompt control.");
+  }
 
   /// <summary>
   /// Selects each requested target through synthesized selection, then the

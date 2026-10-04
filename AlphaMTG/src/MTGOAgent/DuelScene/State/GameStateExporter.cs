@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
 using MTGOSDK.API.Play.Games;
+using MTGOSDK.API.Play.Games.Controls;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.API.Play.Games.Processors.EventArgs;
 using MTGOSDK.Core.Reflection;
@@ -249,8 +250,10 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       // change, mode change, prompt change) moves at least one of these, so
       // an unchanged signature means a redundant delivery and is safe to skip.
       InteractionMode mode = game.InteractionState.Mode;
+      PromptOptionsSnapshot promptOptions = prompt.CaptureOptions();
+      long clientRevision = promptOptions.ClientRevision;
       string signature =
-        $"{prompt.Nonce}:{prompt.Text}:{registry?.Version ?? 0}:{mode}";
+        $"{prompt.Nonce}:{prompt.Text}:{registry?.Version ?? 0}:{mode}:{clientRevision}";
       if (_lastUiRefreshes.TryGetValue(game.Id, out string? previous)
           && previous == signature)
       {
@@ -261,7 +264,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       int? nonceOverride = snapshot.Nonce == prompt.Nonce
         ? null
         : prompt.Nonce;
-      Export(game, snapshot, prompt, registry, nonceOverride);
+      Export(game, snapshot, prompt, registry, nonceOverride, promptOptions);
     }
     catch (Exception exception)
     {
@@ -277,7 +280,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     GameStateSnapshot snapshot,
     GamePrompt prompt,
     CardActionRegistry? registry,
-    int? nonceOverride = null)
+    int? nonceOverride = null,
+    PromptOptionsSnapshot? promptOptions = null)
   {
     try
     {
@@ -314,7 +318,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         prompt,
         registry,
         cards,
-        nonceOverride);
+        nonceOverride,
+        promptOptions);
       _documents[game.Id] = document;
 
       logger.LogInformation(
@@ -336,7 +341,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     GamePrompt prompt,
     CardActionRegistry? registry,
     IReadOnlyList<ResolvedCard> resolved,
-    int? nonceOverride = null)
+    int? nonceOverride = null,
+    PromptOptionsSnapshot? promptOptionsOverride = null)
   {
     var cards = resolved
       .OrderBy(card => card.Zone ?? string.Empty)
@@ -345,8 +351,11 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       .Select(ActionProjection.ProjectCard)
       .ToList();
 
+    PromptOptionsSnapshot promptOptions =
+      promptOptionsOverride ?? prompt.CaptureOptions();
     var candidates = new List<ActionCandidate>();
-    foreach (var action in ActionProjection.ReadPromptActions(prompt))
+    foreach (var action in promptOptions.Options.Values
+      .SelectMany(group => group).OfType<GameAction>())
     {
       if (action is null)
         continue;
@@ -405,11 +414,29 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       && manaChoices.Count > 0)
     {
       actions.Add(new AgentAction(
-        actions.Count,
+        candidates.Count,
         "PayMana",
         "Pay",
         new ActionSource("prompt"),
         Choices: manaChoices));
+    }
+    int nextActionId = actions.Count == 0
+      ? 0
+      : actions.Max(action => action.Id) + 1;
+    foreach (PromptControl control in promptOptions.Options.Values
+      .SelectMany(group => group).OfType<PromptControl>()
+      .Where(control => control.Enabled
+        && control.Id.Group == PromptButtonGroup.Standard))
+    {
+      actions.Add(new AgentAction(
+        nextActionId++,
+        control.Type.ToString(),
+        control.Name,
+        new ActionSource("control",
+          ControlId: control.Id,
+          ClientRevision: promptOptions.ClientRevision,
+          ButtonType: control.ButtonType,
+          Color: control.Color)));
     }
     // Player click state comes from the duel scene's own player view models, so
     // it reflects the same targetability pass that sets card flags. Matched on

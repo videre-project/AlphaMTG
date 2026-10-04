@@ -5,6 +5,7 @@
 
 using System.Text.Json;
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 using Microsoft.AspNetCore.Mvc;
 
@@ -31,7 +32,7 @@ internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
         throw new ArgumentException("model must be 'gliner-decide'.");
       string state = RenderState(request.State);
       IReadOnlyDictionary<string, DecisionQuestion> questions =
-        ParseQuestions(request.Questions);
+        ParseQuestions(request.Questions, ActionLabels(request.State));
       IReadOnlyDictionary<string, DecisionAnswer> answers =
         model.Decide(state, questions);
       return Ok(new { model = request.Model, answers });
@@ -68,7 +69,8 @@ internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
   }
 
   private static IReadOnlyDictionary<string, DecisionQuestion> ParseQuestions(
-    Dictionary<string, SystemOneQuestionRequest>? requests)
+    Dictionary<string, SystemOneQuestionRequest>? requests,
+    IReadOnlyDictionary<string, string> actionLabels)
   {
     if (requests is null || requests.Count == 0)
       throw new ArgumentException("questions must contain at least one named question.");
@@ -84,7 +86,7 @@ internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
       IReadOnlyList<DecisionCandidate> criteria = request.Type switch
       {
         "noul" => ParseNoul(request.Criteria),
-        "choice" => ParseChoice(request.Criteria),
+        "choice" => ParseChoice(request.Criteria, actionLabels),
         "score" => ParseScore(request.Criteria),
         _ => throw new ArgumentException(
           $"Question '{name}' has unsupported type '{request.Type}'."),
@@ -116,7 +118,8 @@ internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
     };
   }
 
-  private static IReadOnlyList<DecisionCandidate> ParseChoice(JsonElement criteria)
+  private static IReadOnlyList<DecisionCandidate> ParseChoice(
+    JsonElement criteria, IReadOnlyDictionary<string, string> actionLabels)
   {
     if (criteria.ValueKind != JsonValueKind.Object)
       throw new ArgumentException("choice criteria must be an object.");
@@ -126,12 +129,78 @@ internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
       if (string.IsNullOrWhiteSpace(option.Name))
         throw new ArgumentException("choice option names must be nonempty.");
       candidates.Add(new DecisionCandidate(
-        option.Name, option.Name, Description(option.Value)));
+        option.Name,
+        actionLabels.GetValueOrDefault(option.Name) ?? option.Name,
+        Description(option.Value)));
     }
     ValidateCount(candidates.Count);
     if (candidates.Select(item => item.Id).Distinct().Count() != candidates.Count)
       throw new ArgumentException("choice option names must be unique.");
     return candidates;
+  }
+
+  // AlphaMTG's action IDs are scoped to one exported state. Keep each ID as
+  // the public choice key while giving the local span model a descriptive
+  // label for the matching action. Other SystemOne choices retain their keys
+  // as labels, including when state is a string or array.
+  private static IReadOnlyDictionary<string, string> ActionLabels(JsonElement state)
+  {
+    var labels = new Dictionary<string, string>();
+    if (state.ValueKind != JsonValueKind.Object
+      || !TryProperty(state, "actions", out JsonElement actions)
+      || actions.ValueKind != JsonValueKind.Array)
+      return labels;
+
+    foreach (JsonElement action in actions.EnumerateArray())
+    {
+      if (action.ValueKind != JsonValueKind.Object
+        || !TryProperty(action, "id", out JsonElement id)
+        || id.ValueKind != JsonValueKind.Number
+        || !id.TryGetInt32(out int actionId))
+        continue;
+
+      string key = actionId.ToString(CultureInfo.InvariantCulture);
+      string source = "action";
+      if (TryProperty(action, "source", out JsonElement actionSource)
+        && actionSource.ValueKind == JsonValueKind.Object
+        && TryProperty(actionSource, "cardId", out JsonElement cardId)
+        && cardId.ValueKind == JsonValueKind.Number
+        && cardId.TryGetInt32(out int card))
+      {
+        source = $"card:{card}";
+      }
+      else if (TryProperty(action, "name", out JsonElement name)
+        && name.ValueKind == JsonValueKind.String)
+      {
+        string slug = Regex.Replace(
+          name.GetString()!.ToLowerInvariant(), "[^a-z0-9]+", "_").Trim('_');
+        bool control = TryProperty(action, "source", out JsonElement origin)
+          && origin.ValueKind == JsonValueKind.Object
+          && TryProperty(origin, "type", out JsonElement originType)
+          && originType.ValueKind == JsonValueKind.String
+          && originType.GetString() == "control";
+        source = $"{(control ? "control" : "prompt")}:{(slug.Length > 0 ? slug : "action")}";
+      }
+
+      if (!labels.TryAdd(key, $"{source}/action:{key}"))
+        throw new ArgumentException($"state.actions has duplicate action ID {key}.");
+    }
+    return labels;
+  }
+
+  private static bool TryProperty(
+    JsonElement value, string name, out JsonElement property)
+  {
+    foreach (JsonProperty item in value.EnumerateObject())
+    {
+      if (string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase))
+      {
+        property = item.Value;
+        return true;
+      }
+    }
+    property = default;
+    return false;
   }
 
   private static IReadOnlyList<DecisionCandidate> ParseScore(JsonElement criteria)
