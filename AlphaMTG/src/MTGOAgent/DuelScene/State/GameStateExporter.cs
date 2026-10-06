@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
 using MTGOSDK.API.Play.Games;
-using MTGOSDK.API.Play.Games.Controls;
+using MTGOSDK.API.Interface.Controls;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.API.Play.Games.Processors.EventArgs;
 using MTGOSDK.Core.Reflection;
@@ -93,11 +93,12 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
 
     try
     {
-      CardActionRegistry registry = game.CardActions;
+      var processing = GameProcessor.ForGame(game);
+      CardActionRegistry registry = processing.CardActions;
 
       // The SDK registry is attached before the built-in processor events so
       // the exporter has an authoritative action view for each snapshot.
-      game.CardActionsChanged += _ => ScheduleRefresh(game);
+      processing.CardActions.Changed += _ => ScheduleRefresh(game);
 
       // Target selection changes the interaction mode without setting a prompt
       // or sending a snapshot, so this is the only notification of it.
@@ -108,10 +109,10 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       // tracker that cannot attach must not take the exporter down with it.
       try
       {
-        game.InteractionModeChanged +=
+        processing.InteractionState.Changed +=
           mode => OnInteractionModeChanged(game, mode);
 
-        if (game.InteractionState.AttachFailure is Exception failure)
+        if (processing.InteractionState.AttachFailure is Exception failure)
         {
           logger.LogWarning(
             failure,
@@ -148,7 +149,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       game.OnCardChanged += args => ExportCurrent(game, args);
       game.OnPlayerChanged += args => ExportCurrent(game, args);
       game.OnZoneChanged += args => ExportCurrent(game, args);
-      game.ReadyProcessor();
+      processing.Ready();
       logger.LogInformation(
         "Tracking MTGO game {GameId} with action registry version {Version}.",
         game.Id,
@@ -168,7 +169,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     if (_prompts.TryGetValue(game.Id, out var prompt)
         && prompt.Nonce == args.Nonce)
     {
-      Export(game, args.Snapshot, prompt, game.CardActions);
+      Export(game, args.Snapshot, prompt, GameProcessor.ForGame(game).CardActions);
     }
   }
 
@@ -229,7 +230,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
     {
       // A UI transition can precede the SDK's set_Prompt/gameplay-status
       // callbacks. Drain both queues before deciding that the model is stale.
-      game.WaitForPendingProcessing(TimeSpan.FromSeconds(1));
+      GameProcessor.ForGame(game).WaitForPendingProcessing(TimeSpan.FromSeconds(1));
 
       GamePrompt? prompt = Try<GamePrompt?>(() => game.Prompt);
       if (prompt is null)
@@ -241,7 +242,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
         return;
       }
 
-      CardActionRegistry? registry = game.CardActions;
+      CardActionRegistry? registry = GameProcessor.ForGame(game).CardActions;
       // Include the registry version and the interaction mode so a change in
       // either produces a fresh export even when the prompt text and nonce
       // are unchanged. The mode matters most: entering target selection
@@ -249,8 +250,8 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       // cards and players are targetable. Every refresh trigger (action-list
       // change, mode change, prompt change) moves at least one of these, so
       // an unchanged signature means a redundant delivery and is safe to skip.
-      InteractionMode mode = game.InteractionState.Mode;
-      PromptOptionsSnapshot promptOptions = prompt.CaptureOptions();
+      InteractionMode mode = GameProcessor.ForGame(game).InteractionState.Mode;
+      PromptOptionsSnapshot promptOptions = PromptProcessor.CaptureOptions(game, prompt);
       long clientRevision = promptOptions.ClientRevision;
       string signature =
         $"{prompt.Nonce}:{prompt.Text}:{registry?.Version ?? 0}:{mode}:{clientRevision}";
@@ -352,7 +353,7 @@ internal sealed class GameStateExporter(ILogger logger, int localUserId) : IDisp
       .ToList();
 
     PromptOptionsSnapshot promptOptions =
-      promptOptionsOverride ?? prompt.CaptureOptions();
+      promptOptionsOverride ?? PromptProcessor.CaptureOptions(game, prompt);
     var candidates = new List<ActionCandidate>();
     foreach (var action in promptOptions.Options.Values
       .SelectMany(group => group).OfType<GameAction>())

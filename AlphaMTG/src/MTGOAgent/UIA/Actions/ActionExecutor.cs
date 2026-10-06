@@ -10,7 +10,7 @@ using FlaUI.Core.Definitions;
 using FlaUI.Core.Input;
 
 using MTGOSDK.API.Play.Games;
-using MTGOSDK.API.Play.Games.Controls;
+using MTGOSDK.API.Interface.Controls;
 using MTGOSDK.API.Play.Games.Processors;
 using MTGOSDK.Core.Reflection;
 using static MTGOSDK.Core.Reflection.DLRWrapper;
@@ -42,7 +42,7 @@ internal sealed class ActionExecutor(
 {
   private readonly UIASession _session = new();
   private readonly Game _game = game;
-  private readonly CardActionRegistry _registry = game.CardActions;
+  private readonly CardActionRegistry _registry = GameProcessor.ForGame(game).CardActions;
   private SelectionExecutor Selection =>
     new(_game, _state, _registry, _session);
   private AgentState _state = state;
@@ -221,7 +221,7 @@ internal sealed class ActionExecutor(
 
     GamePrompt livePrompt = _game.Prompt
       ?? throw new InvalidOperationException("The game has no live prompt.");
-    PromptOptionsSnapshot live = livePrompt.CaptureOptions();
+    PromptOptionsSnapshot live = PromptProcessor.CaptureOptions(_game, livePrompt);
     if (live.PromptNonce != state.Nonce
       || live.ClientRevision != revision)
       throw new InvalidOperationException(

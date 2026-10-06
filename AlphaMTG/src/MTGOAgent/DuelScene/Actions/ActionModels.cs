@@ -6,7 +6,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-using MTGOSDK.API.Play.Games.Controls;
+using MTGOSDK.API.Interface.Controls;
 
 
 namespace AlphaMTG.MTGOAgent;
