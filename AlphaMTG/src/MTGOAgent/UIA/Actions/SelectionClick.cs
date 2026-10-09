@@ -41,11 +41,12 @@ internal static class SelectionClick
     double y,
     int anchorCardId,
     MTGOSDK.API.Play.Games.Game game,
-    Action<string>? log = null)
+    Action<string>? log = null,
+    int? expectedCardId = null)
   {
     return SelectButton(
       x, y, anchorCardId, game,
-      System.Windows.Input.MouseButton.Left, log);
+      System.Windows.Input.MouseButton.Left, log, expectedCardId);
   }
 
   private static SelectionResult SelectButton(
@@ -54,7 +55,8 @@ internal static class SelectionClick
     int anchorCardId,
     MTGOSDK.API.Play.Games.Game game,
     System.Windows.Input.MouseButton button,
-    Action<string>? log)
+    Action<string>? log,
+    int? expectedCardId)
   {
     void Log(string message)
     {
@@ -64,7 +66,7 @@ internal static class SelectionClick
     // The server holds the single client for the process lifetime; no
     // per-operation attach here. (A second attach mid-operation used to
     // poison the shared static remote state when disposed.)
-    return SelectCore(x, y, anchorCardId, game, button, Log);
+    return SelectCore(x, y, anchorCardId, game, button, Log, expectedCardId);
   }
 
   private static SelectionResult SelectCore(
@@ -73,7 +75,8 @@ internal static class SelectionClick
     int anchorCardId,
     MTGOSDK.API.Play.Games.Game game,
     System.Windows.Input.MouseButton button,
-    Action<string> Log)
+    Action<string> Log,
+    int? expectedCardId)
   {
     using (DiverCommunicator.BeginUIThreadScope())
     {
@@ -120,6 +123,14 @@ internal static class SelectionClick
             || candidateType.Contains("Avatar")
             || candidateType.Contains("Player"))
           {
+            if (expectedCardId.HasValue)
+            {
+              if (!candidateType.Contains("Card_View")) break;
+              int hitCardId = (int)candidate.DataContext.GameCard.Id;
+              if (hitCardId != expectedCardId.Value)
+                return new SelectionResult(false, hitType,
+                  $"Hit card {hitCardId}, expected card {expectedCardId.Value}.");
+            }
             accepted = true;
             targetType = candidateType;
             break;

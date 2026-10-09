@@ -92,7 +92,8 @@ internal sealed class SelectionExecutor(
       click.X,
       click.Y,
       clickCardId,
-      _game);
+      _game,
+      expectedCardId: clickCardId);
     if (!selection.Resolved)
     {
       throw new InvalidOperationException(
@@ -144,7 +145,8 @@ internal sealed class SelectionExecutor(
       point.X,
       point.Y,
       cardId,
-      _game);
+      _game,
+      expectedCardId: cardId);
     if (!selection.Resolved)
     {
       throw new InvalidOperationException(
