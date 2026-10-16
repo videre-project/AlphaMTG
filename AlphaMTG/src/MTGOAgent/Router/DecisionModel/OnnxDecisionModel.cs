@@ -19,10 +19,10 @@ namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 /// one forward pass per question over its instructions, criteria, and the
 /// shared state. The input layout is the traced span-extractor protocol.
 /// </summary>
-internal sealed class OnnxDecisionModel : IDecisionModel, IDisposable
+internal sealed class OnnxDecisionModel : IDecisionModel
 {
   private readonly InferenceSession _session;
-  private readonly ITokenizer _tokenizer;
+  private readonly UnigramTokenizer _tokenizer;
   private readonly RouterInputs _inputs;
   private readonly string _output;
   private readonly int _maxLength;
@@ -34,10 +34,10 @@ internal sealed class OnnxDecisionModel : IDecisionModel, IDisposable
     _inputs = config.Inputs;
     _output = config.Output;
     _maxLength = config.MaxLength;
-    _session = new InferenceSession(
-      Path.Combine(weightsDirectory, config.Model));
     _tokenizer = new UnigramTokenizer(
       Path.Combine(weightsDirectory, config.Tokenizer));
+    _session = new InferenceSession(
+      Path.Combine(weightsDirectory, config.Model));
   }
 
   public IReadOnlyDictionary<string, DecisionAnswer> Decide(
@@ -48,13 +48,13 @@ internal sealed class OnnxDecisionModel : IDecisionModel, IDisposable
     var answers = new Dictionary<string, DecisionAnswer>(questions.Count);
     foreach ((string name, DecisionQuestion question) in questions)
     {
-      IReadOnlyList<ScoredCandidate> scored = ScoreQuestion(state, question);
-      answers.Add(name, ToAnswer(question, scored));
+      float[] logits = ScoreQuestion(state, question);
+      answers.Add(name, ToAnswer(question, logits));
     }
     return answers;
   }
 
-  private IReadOnlyList<ScoredCandidate> ScoreQuestion(
+  private float[] ScoreQuestion(
     string state, DecisionQuestion question)
   {
     IReadOnlyList<DecisionCandidate> candidates = question.Criteria;
@@ -80,27 +80,24 @@ internal sealed class OnnxDecisionModel : IDecisionModel, IDisposable
     if (logits.Length != candidates.Count)
       throw new InvalidOperationException(
         $"Model returned {logits.Length} logits for {candidates.Count} criteria.");
-    var scored = new List<ScoredCandidate>(candidates.Count);
-    for (int i = 0; i < input.LabelIds.Count; i++)
-      scored.Add(new ScoredCandidate(input.LabelIds[i], logits[i]));
-    return scored;
+    return logits;
   }
 
   private static DecisionAnswer ToAnswer(
-    DecisionQuestion question, IReadOnlyList<ScoredCandidate> scored)
+    DecisionQuestion question, IReadOnlyList<float> logits)
   {
-    if (scored.Count < 2 || scored.Any(item => !float.IsFinite(item.Score)))
+    if (logits.Count < 2 || logits.Any(value => !float.IsFinite(value)))
       throw new InvalidOperationException("The model returned invalid decision logits.");
 
     // Stable softmax: only differences between logits matter.
-    double maximum = scored.Max(item => (double)item.Score);
-    double[] weights = scored
-      .Select(item => Math.Exp(item.Score - maximum))
+    double maximum = logits.Max();
+    double[] weights = logits
+      .Select(value => Math.Exp(value - maximum))
       .ToArray();
     double total = weights.Sum();
-    var probabilities = new Dictionary<string, double>(scored.Count);
-    for (int i = 0; i < scored.Count; i++)
-      probabilities.Add(scored[i].Id, weights[i] / total);
+    var probabilities = new Dictionary<string, double>(logits.Count);
+    for (int i = 0; i < logits.Count; i++)
+      probabilities.Add(question.Criteria[i].Id, weights[i] / total);
 
     double[] ranked = probabilities.Values.OrderByDescending(value => value).ToArray();
     double confidence = ranked[0] - ranked[1];

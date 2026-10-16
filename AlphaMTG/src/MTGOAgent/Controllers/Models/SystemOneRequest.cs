@@ -5,6 +5,7 @@
 
 using System.Text.Json;
 
+
 namespace AlphaMTG.MTGOAgent.Controllers.Models;
 
 internal sealed record SystemOneRequest(

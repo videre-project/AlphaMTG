@@ -3,8 +3,8 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-using System.Text.Json;
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 using Microsoft.AspNetCore.Mvc;
@@ -12,14 +12,15 @@ using Microsoft.AspNetCore.Mvc;
 using AlphaMTG.MTGOAgent.Controllers.Models;
 using AlphaMTG.MTGOAgent.Router.DecisionModel;
 
+
 namespace AlphaMTG.MTGOAgent.Controllers;
 
 /// <summary>
-/// Local SystemOne-style decisions using the mounted gliner-decide weights.
+/// Runs decision questions using the mounted gliner-decide weights.
 /// Each question receives its own instructions and criteria against one state.
 /// </summary>
 [ApiController]
-internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
+internal sealed class DecisionController(IDecisionModel? model = null) : ControllerBase
 {
   [HttpPost("/v1/systemone")]
   public IActionResult Decide([FromBody] SystemOneRequest? request)
@@ -33,23 +34,22 @@ internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
       string state = RenderState(request.State);
       IReadOnlyDictionary<string, DecisionQuestion> questions =
         ParseQuestions(request.Questions, ActionLabels(request.State));
-      IReadOnlyDictionary<string, DecisionAnswer> answers =
-        model.Decide(state, questions);
+      if (model is null)
+        return StatusCode(503, new
+        {
+          error = "No decision model configured: set ALPHAMTG_ROUTER_WEIGHTS to a "
+            + "weights directory containing router.json."
+        });
+      IReadOnlyDictionary<string, DecisionAnswer> answers = model.Decide(state, questions);
       return Ok(new { model = request.Model, answers });
     }
-    catch (ArgumentException exception) when (
-      exception.Message.StartsWith("Decision input is ", StringComparison.Ordinal))
+    catch (ArgumentOutOfRangeException exception) when (exception.ParamName == "maxLength")
     {
-      return UnprocessableEntity(new { error = exception.Message });
+      return UnprocessableEntity(new { error = exception.Message.Split('\n')[0] });
     }
     catch (ArgumentException exception)
     {
       return BadRequest(new { error = exception.Message });
-    }
-    catch (InvalidOperationException exception) when (
-      exception.Message.StartsWith("No decision model configured", StringComparison.Ordinal))
-    {
-      return StatusCode(503, new { error = exception.Message });
     }
   }
 
@@ -139,10 +139,8 @@ internal sealed class SystemOneController(IDecisionModel model) : ControllerBase
     return candidates;
   }
 
-  // AlphaMTG's action IDs are scoped to one exported state. Keep each ID as
-  // the public choice key while giving the local span model a descriptive
-  // label for the matching action. Other SystemOne choices retain their keys
-  // as labels, including when state is a string or array.
+  // Action IDs identify choices in one SDK update. Give the model a label
+  // describing each source while retaining the submitted ID in the answer.
   private static IReadOnlyDictionary<string, string> ActionLabels(JsonElement state)
   {
     var labels = new Dictionary<string, string>();

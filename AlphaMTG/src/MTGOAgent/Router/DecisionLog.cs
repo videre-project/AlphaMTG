@@ -6,42 +6,56 @@
 using System.IO;
 using System.Text.Json;
 
-using AlphaMTG.MTGOAgent.Router.DecisionModel;
-
 
 namespace AlphaMTG.MTGOAgent.Router;
 
 /// <summary>
-/// Append-only JSONL decision log, one file per game under the project
-/// logs directory. Written best-effort: logging never fails a game
-/// action. Nothing reads it yet; the model loop and fine-tuning will.
+/// Writes one JSONL execution log per game for diagnostics.
+/// A logging failure does not fail the requested game action.
 /// </summary>
 internal sealed class DecisionLog
 {
-  private readonly object _gate = new();
+  private readonly object _writeLock = new();
+  private static readonly JsonSerializerOptions s_jsonOptions = new()
+  {
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    DefaultIgnoreCondition =
+      System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+  };
 
-  public void Record(TickRecord record)
+  public void Record(
+    int gameId,
+    object state,
+    int? nonceAfter,
+    object request,
+    object? result = null,
+    string? note = null)
   {
     try
     {
+      var record = new
+      {
+        at = DateTimeOffset.UtcNow,
+        state,
+        nonceAfter,
+        request,
+        result,
+        note
+      };
       string directory = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "logs");
       Directory.CreateDirectory(directory);
-      string line = JsonSerializer.Serialize(record, new JsonSerializerOptions
-      {
-        DefaultIgnoreCondition =
-          System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-      });
-      lock (_gate)
+      string line = JsonSerializer.Serialize(record, s_jsonOptions);
+      lock (_writeLock)
       {
         File.AppendAllText(
-          Path.Combine(directory, $"decisions-{record.GameId}.jsonl"),
+          Path.Combine(directory, $"decisions-{gameId}.jsonl"),
           line + "\n");
       }
     }
     catch
     {
-      // Logging is observational. Swallow everything.
+      // A failed log write must not turn a dispatched action into a failed request.
     }
   }
 }

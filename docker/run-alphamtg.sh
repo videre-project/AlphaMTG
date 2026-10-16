@@ -33,9 +33,7 @@ rm -rf "$nuget_packages/mtgosdk" \
 dotnet restore "$project" --configfile "$nuget_config" --force-evaluate --no-cache
 dotnet build "$project" -c Debug --no-restore
 
-# AlphaMTG is a stateful server: this entrypoint builds it, then runs it
-# in the foreground. It serves HTTP (ALPHAMTG_HTTP_PORT, default 8080)
-# and, when stdin is piped (docker exec -i), MCP over stdio.
+# Run the HTTP server in the foreground (ALPHAMTG_HTTP_PORT, default 8080).
 echo "=== Starting AlphaMTG ==="
 win_dotnet=/home/wine/windows-dotnet/dotnet.exe
 win_output=$(winepath -w "$output")

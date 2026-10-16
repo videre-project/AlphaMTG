@@ -3,6 +3,7 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
+
 namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 
 /// <summary>

@@ -3,7 +3,6 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-using System.IO;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -17,6 +16,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
+using MTGOSDK.Core.Diagnostics;
 using AlphaMTG.MTGOAgent;
 using AlphaMTG.MTGOAgent.Router;
 using AlphaMTG.MTGOAgent.Router.DecisionModel;
@@ -29,12 +29,6 @@ internal static class Program
   [STAThread]
   public static async Task Main(string[] args)
   {
-    if (args.Length == 2 && args[0] == "--replay")
-    {
-      await ReplayRunAsync(args[1]);
-      return;
-    }
-
     WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
     builder.Logging.ClearProviders();
@@ -56,8 +50,7 @@ internal static class Program
       })
       .ConfigureApplicationPartManager(manager =>
       {
-        // Controllers stay internal like the rest of the agent; discover
-        // them explicitly instead of widening the assembly's surface.
+        // Discover the agent's internal controllers when building MVC routes.
         manager.FeatureProviders.Add(new InternalControllerFeatureProvider());
       });
 
@@ -72,36 +65,21 @@ internal static class Program
         services.GetRequiredService<ILoggerFactory>(),
         services.GetRequiredService<ILogger<Server>>())
         .GetAwaiter().GetResult());
-    builder.Services.AddSingleton<IDecisionModel>(
-      _ => DecisionModelResolver.Resolve());
+    builder.Services.AddSingleton<DecisionLog>();
+    string? weightsDirectory = Environment.GetEnvironmentVariable("ALPHAMTG_ROUTER_WEIGHTS");
+    if (!string.IsNullOrWhiteSpace(weightsDirectory))
+      builder.Services.AddSingleton<IDecisionModel>(_ => new OnnxDecisionModel(weightsDirectory));
 
     WebApplication app = builder.Build();
-    // Plain HTTP only: no HTTPS redirection or certificates. The old
-    // TcpListener transport behaved the same way.
+    app.Use(async (context, next) =>
+    {
+      using var timing = LocalTelemetry.Begin("alpha.http",
+        context.Request.Method + " " + context.Request.Path, context.TraceIdentifier);
+      await next();
+    });
     app.MapGet("/healthz", () => Results.Text("ok", "text/plain"));
     app.MapControllers();
     await app.RunAsync();
-  }
-
-  /// <summary>
-  /// Replays historical decisions using an explicit generic choice question.
-  /// These logs have no planner directive, so agreement is diagnostic only.
-  /// </summary>
-  private static async Task ReplayRunAsync(string logPath)
-  {
-    using IDecisionModel model = DecisionModelResolver.Resolve();
-    IReadOnlyList<ReplayOutcome> outcomes = DecisionLogReplay.Run(logPath, model);
-
-    int correct = outcomes.Count(outcome => outcome.Correct);
-    Console.WriteLine($"{Path.GetFileName(logPath)}: "
-      + $"{correct}/{outcomes.Count} ticks match");
-    foreach (ReplayOutcome outcome in outcomes)
-    {
-      Console.WriteLine(
-        $"  {outcome.Tick,3}  {(outcome.Correct ? "ok  " : "MISS")}  "
-        + $"confidence {outcome.Confidence,5:F2}  played {outcome.ExecutedActionId}, "
-        + $"model {outcome.ModelActionId}  {outcome.Phase}  {outcome.Prompt}");
-    }
   }
 
   /// <summary>

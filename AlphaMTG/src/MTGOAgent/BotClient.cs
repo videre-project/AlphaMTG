@@ -3,9 +3,6 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
-using System;
-using System.Threading.Tasks;
-
 using Microsoft.Extensions.Logging;
 
 using MTGOSDK.API;
@@ -18,10 +15,7 @@ internal static class BotClient
 {
   public static async Task<Client> StartAsync(
     ILoggerFactory loggerFactory,
-    ILogger logger,
-    bool logOn,
-    bool closeOnExit = true
-  )
+    ILogger logger)
   {
     while (!await Client.IsOnline())
     {
@@ -33,31 +27,39 @@ internal static class BotClient
       new ClientOptions
       {
         CreateProcess = true,
-        CloseOnExit = closeOnExit,
+        CloseOnExit = false,
         AcceptEULAPrompt = true
       },
       loggerFactory: loggerFactory
     );
 
-    if (logOn && !client.IsConnected)
+    try
     {
-      DotEnv.LoadFile();
-      var logOnTask = client.LogOn(
-        username: DotEnv.Get("USERNAME"),
-        password: DotEnv.Get("PASSWORD")
-      );
-      while (!logOnTask.IsCompleted && !IsSessionReady(client))
-        await Task.Delay(250);
+      if (!client.IsConnected)
+      {
+        DotEnv.LoadFile();
+        var logOnTask = client.LogOn(
+          username: DotEnv.Get("USERNAME"),
+          password: DotEnv.Get("PASSWORD")
+        );
+        while (!logOnTask.IsCompleted && !IsSessionReady(client))
+          await Task.Delay(250);
 
-      if (logOnTask.IsCompleted)
-        await logOnTask;
-      else
-        _ = ObserveLogOn(logOnTask, logger);
+        if (logOnTask.IsCompleted)
+          await logOnTask;
+        else
+          _ = ObserveLogOn(logOnTask, logger);
 
-      logger.LogInformation("Connected as {Username}.", client.CurrentUser.Name);
+        logger.LogInformation("Connected as {Username}.", client.CurrentUser.Name);
+      }
+
+      return client;
     }
-
-    return client;
+    catch
+    {
+      client.Dispose();
+      throw;
+    }
   }
 
   private static bool IsSessionReady(Client client)

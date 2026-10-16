@@ -1,10 +1,58 @@
-# Local decision API
+# Duel and decision API
 
-`POST /v1/systemone` answers named questions about a game state using the local GLiNER2.5-Decide ONNX model. Set `ALPHAMTG_ROUTER_WEIGHTS` to the directory containing `router.json`, the tokenizer and the model. The default HTTP port is 8080.
+AlphaMTG listens on port 8080 by default. Set `ALPHAMTG_HTTP_PORT` to change the port. To enable local inference, point `ALPHAMTG_ROUTER_WEIGHTS` to the directory containing `router.json`, the ONNX model and its tokenizer.
 
-## Choose an action
+## Read a duel
 
-Use each action's ID from `/snapshot.actions` as a string key in `criteria`. Give a card action its card name and ability text. Include the card ID when multiple copies offer the same ability.
+`GET /snapshot?gameId=…` returns MTGOSDK's latest update for a duel. Pass `gameId` when more than one duel is open. When `canAct` is true, use the prompt to choose an entry from `actions` or `selections`.
+
+| Snapshot field | Meaning |
+| --- | --- |
+| `gameId`, `turn`, `phase` | Duel and current position in the turn. |
+| `capturedAtUtc` | When the client received the gameplay snapshot, in UTC. |
+| `nonce`, `serverNonce` | Use `nonce` for commands. It changes with gameplay or local interaction. `serverNonce` tracks the server update and can stay the same when a dialog changes. |
+| `prompt.text`, `prompt.nativeText`, `prompt.promptedPlayer` | Displayed prompt text (with native text as a fallback), native text and the name of the prompted player. |
+| `interactionMode`, `canAct` | MTGO's current interaction mode and whether the local player may act. In multiplayer the prompted player also needs priority. |
+| `cards`, `players` | Card IDs, names, zones and owner indices, plus player names, indices, life totals and priority. Revealed cards in hidden zones, such as a library during scry, can also appear here. |
+| `actions` | Prompt options, card abilities and enabled controls. Each has an `id`, `type`, `name` and `source`. A card source identifies the card by ID and can include its `logicalAddress`. |
+| `selections` | Card rows have `selectable`, `targetable` and `targeted` flags. Player rows have `targetable` and `targeted`. A card or player marked `targeted` may already be selected. |
+
+A card's `logicalAddress` distinguishes client objects that share a card ID. Use `cardId` from the gameplay snapshot to select a card. You can inspect the live layout of a battlefield card with `GET /preview-card?cardId=…&gameId=…`. It returns the bounds, drawing order, overlapping cards, visible regions and proposed click point.
+
+## Submit a command
+
+Send the `nonce` from the snapshot you used to choose the action. Action IDs are numbered within each update and can refer to different actions after the nonce changes. AlphaMTG checks the nonce and `canAct` before dispatch. Read a fresh snapshot after each command to see how MTGO responded.
+
+| Endpoint | JSON fields (all three also accept `gameId`) |
+| --- | --- |
+| `POST /execute-action` | `nonce`, `actionId` and any parameter required by that action |
+| `POST /select-card` | `nonce`, `cardId` |
+| `POST /select-player` | `nonce`, `playerName` |
+
+Use `/execute-action` for a card ability or a prompt button. For an action that requires a parameter, use the IDs and limits on that action in `/snapshot`. Supply one of the following per request.
+
+| Parameter | Value |
+| --- | --- |
+| `targetSetId` and `targetId` | A target set and one target from that set. |
+| `choiceId` | An ID from the offered choices. For a mana ability, the color values are white 1, blue 2, black 4, red 8, green 16 and colorless 32. |
+| `number` | A value in the offered range. |
+| `order` | Each offered ID exactly once, in the desired order. |
+| `distributions` | One `{targetId, value}` entry for each target. Amounts must fall within their ranges and add up to the required total. Include `targetSetId` for divided spells. Omit it for combat damage. |
+| `wish` | A card name. |
+
+Pile choices appear as separate `ChoosePile` actions. For a card action with several target sets, the response indicates whether more selections are needed.
+
+## Ask the decision model
+
+`POST /v1/systemone` scores named questions about a shared `state` using GLiNER2.5-Decide locally. Each question runs independently. Supply a nonempty state (a string, object or array) and a `questions` object. Each question has a `type`, an `instructions` string describing the decision, and criteria appropriate to its type.
+
+| Type | Criteria | Fields in each answer |
+| --- | --- | --- |
+| `choice` | Map 2–255 candidate keys to descriptions. | `choice`, `probabilities`, `confidence` |
+| `noul` | Optionally supply descriptions for `true` and `false`. They default to Yes and No. | `noul`, `confidence` |
+| `score` | Supply 2–255 level descriptions as an ordered array or a numeric-keyed object. Object keys are sorted and levels are numbered from zero. | `score`, `expected_level`, `probabilities`, `legend`, `confidence` |
+
+For a choice between game actions, use the action IDs as string keys. Include a card ID in the description when two copies offer the same ability. Here, both Islands can pay for the spell.
 
 ```json
 {
@@ -30,22 +78,12 @@ Use each action's ID from `/snapshot.actions` as a string key in `criteria`. Giv
 }
 ```
 
-If the model returns `"1"`, pass action ID 1 and the snapshot nonce to `/execute-action`. Action IDs belong to a single snapshot. Read a fresh snapshot after dispatch.
+The result contains `model` and an `answers` entry for each question name. If `answers.next_action.choice` is `"1"`, you can submit action 1 with the original snapshot's `nonce`. For a question about card or player selections, map the answer key back to the corresponding `cardId` or `playerName` and use the selection endpoint.
 
-A prompt button such as **OK** can appear as a `PromptControl` alongside native actions. Visible, enabled controls carry a group, index and client revision. Selecting a target uses a different endpoint. Take eligible cards from `/wpf-snapshot` or eligible players from `/snapshot.players` and submit the chosen identity to `/select-card` or `/select-player`. An eligible card can have no action of its own.
+`confidence` is the difference between the two highest probabilities for `choice` and `score`. For `noul` it is `abs(2 × noul − 1)`. These scores express the model's preference among the supplied candidates. The configured limit is 512 tokens per question, including instructions, criteria and state. Invalid requests return HTTP 400, oversized inputs return 422 and missing weights return 503.
 
-## Questions and results
+To try the Island example, run `python3 AlphaMTG/scripts/probe_game_decisions.py` with the service running and weights configured. It asks for each Island in turn and compares the returned action IDs with the expected IDs. Pass the API base URL as an argument to select an instance.
 
-Each question has its own instructions and shares the request's `state`, which can be a nonempty string, object or array.
+## Command logs
 
-| Type | Criteria | Answer |
-| --- | --- | --- |
-| `choice` | 2–255 keys with descriptions | Selected key and probabilities |
-| `score` | 2–255 ordered levels | Selected level, expected level and probabilities |
-| `noul` | Optional descriptions for `true` and `false` | Weight assigned to `true` |
-
-For choice and score, `confidence` is the difference between the two highest softmax probabilities. For noul it is `abs(2 × noul − 1)`. Each rendered question can use up to 512 tokens, including its instructions and criteria. The endpoint returns HTTP 422 for an oversized question, 400 for invalid input and 503 when no weights are configured.
-
-## Try the example
-
-Run `python3 AlphaMTG/scripts/probe_game_decisions.py` with the decision service running and weights configured. It asks the model to tap each Island in turn, prints both choices and exits with a nonzero status if it picks the wrong action. It sends inference requests only.
+AlphaMTG writes one JSONL file per game. Each entry includes `at`, `state` and `request`, with `nonceAfter` when a subsequent update is available. Check `result` for a dispatched command or `note` for an error.

@@ -3,10 +3,13 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
+using System.Text.Json.Serialization;
+
 
 namespace AlphaMTG.MTGOAgent.Controllers.Models;
 
 internal sealed record SelectCardRequest(
-  int CardId,
+  [property: JsonRequired] int CardId,
+  [property: JsonRequired] int Nonce,
   int? GameId = null
 );

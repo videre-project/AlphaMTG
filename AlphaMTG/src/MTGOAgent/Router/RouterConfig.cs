@@ -7,10 +7,8 @@
 namespace AlphaMTG.MTGOAgent.Router;
 
 /// <summary>
-/// Weights-directory contract. The directory is mounted read-only and
-/// replaced wholesale when you fine-tune: drop a new directory, point
-/// <c>ALPHAMTG_ROUTER_WEIGHTS</c> at it, restart. Tensor names come from
-/// here so a re-export with different names stays working.
+/// Names the model, tokenizer, and tensors in a mounted weights directory.
+/// Loading these names from router.json allows exports to change their tensor names.
 /// </summary>
 internal sealed record RouterConfig(
   string Model,

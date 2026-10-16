@@ -5,6 +5,7 @@
 
 using System.Text.Json.Serialization;
 
+
 namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 
 /// <summary>

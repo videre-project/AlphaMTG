@@ -15,15 +15,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Execution is driven through MTGO's UI Automation tree on purpose: it
-         lets MTGO's own state machine own target legality, sequencing, and
-         completion instead of this client re-implementing them. -->
+    <!-- UI Automation locates player boxes and scrollable zone viewports. -->
     <PackageReference Include="FlaUI.Core" Version="5.0.0" />
     <PackageReference Include="FlaUI.UIA2" Version="5.0.0" />
     <PackageReference Include="MTGOSDK"
-                      Version="*" />
+                      Version="1.7.2.20261016-actions.10" />
     <PackageReference Include="MTGOSDK.Win32"
-                      Version="*" />
+                      Version="1.7.2.20261016-actions.10" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime"
                       Version="1.30.0" />
   </ItemGroup>

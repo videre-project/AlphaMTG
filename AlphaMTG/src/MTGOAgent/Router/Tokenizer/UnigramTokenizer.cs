@@ -10,22 +10,18 @@ using System.Text.Json;
 namespace AlphaMTG.MTGOAgent.Router.Tokenizer;
 
 /// <summary>
-/// Unigram (SentencePiece-style) tokenizer over the embedded model in
-/// <c>tokenizer.json</c>: Metaspace pre-tokenization (whitespace split,
-/// every word prefixed with U+2581), Viterbi best-path segmentation by
-/// token score, added tokens matched atomically, anything else degrades
-/// to [UNK]. Mirrors the tokenizers-library behavior the export was
-/// traced against; verify equality on samples, never by inspection.
+/// Encodes text using the Unigram vocabulary and added tokens in tokenizer.json.
 /// </summary>
-internal sealed class UnigramTokenizer : ITokenizer
+/// <remarks>
+/// Whitespace becomes the SentencePiece word prefix. Viterbi segmentation finds
+/// the highest-scoring token sequence, while added tokens remain indivisible.
+/// A piece that cannot be fully segmented uses the configured unknown token.
+/// </remarks>
+internal sealed class UnigramTokenizer
 {
   private readonly Dictionary<string, (int Id, float Score)> _vocab;
   private readonly Dictionary<string, int> _added;
   private readonly int _unk;
-
-  public int ClsId { get; }
-  public int SepId { get; }
-  public int PadId { get; }
 
   public UnigramTokenizer(string tokenizerJsonPath)
   {
@@ -56,9 +52,6 @@ internal sealed class UnigramTokenizer : ITokenizer
     }
 
     _unk = GetId("[UNK]");
-    ClsId = GetId("[CLS]");
-    SepId = GetId("[SEP]");
-    PadId = GetId("[PAD]");
   }
 
   public IReadOnlyList<int> Encode(string text)
@@ -108,10 +101,8 @@ internal sealed class UnigramTokenizer : ITokenizer
 
   private List<int> EncodeWord(string word)
   {
-    // Mirrors the tokenizers-library path piece-for-piece: whitespace
-    // split, every word prefixed with U+2581, Unigram Viterbi. No
-    // lowercasing here: text words arrive pre-lowered, schema pieces
-    // keep their case.
+    // Prefix each whitespace-delimited piece with U+2581 before segmentation.
+    // Preserve its case because schema pieces bypass the evidence word splitter.
     var ids = new List<int>();
     foreach (string piece in word.Split(
       (char[]?)null, StringSplitOptions.RemoveEmptyEntries))
@@ -123,7 +114,7 @@ internal sealed class UnigramTokenizer : ITokenizer
 
   private List<int> Viterbi(string word)
   {
-    // Best log-score path ending at each byte offset; backtrack the win.
+    // Store the best path ending at each UTF-16 offset, then reconstruct its tokens.
     int n = word.Length;
     var best = new double[n + 1];
     var back = new int[n + 1];

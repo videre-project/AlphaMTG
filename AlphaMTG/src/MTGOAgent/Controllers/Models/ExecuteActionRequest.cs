@@ -3,18 +3,25 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
+using System.Text.Json.Serialization;
+
 
 namespace AlphaMTG.MTGOAgent.Controllers.Models;
 
 internal sealed record ExecuteActionRequest(
-  int ActionId,
-  int Nonce,
+  [property: JsonRequired] int ActionId,
+  [property: JsonRequired] int Nonce,
   int? GameId = null,
   int? TargetSetId = null,
   int? TargetId = null,
   int? ChoiceId = null,
   int? Number = null,
   IReadOnlyList<int>? Order = null,
-  IReadOnlyList<DistributionInputRequest>? Distributions = null,
+  IReadOnlyList<DistributionInput>? Distributions = null,
   string? Wish = null
 );
+
+/// <summary>
+/// Assigns a requested amount to an SDK distribution target.
+/// </summary>
+internal sealed record DistributionInput(int TargetId, int Value);

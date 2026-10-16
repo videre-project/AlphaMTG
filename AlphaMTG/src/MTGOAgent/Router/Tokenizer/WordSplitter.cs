@@ -9,11 +9,9 @@ using System.Text.RegularExpressions;
 namespace AlphaMTG.MTGOAgent.Router.Tokenizer;
 
 /// <summary>
-/// Word-boundary splitter used before subword tokenization of state text.
-/// URLs, emails, and mentions stay whole; word characters (with internal
-/// dashes/underscores) stay whole; every other non-space character stands
-/// alone. Values are lower-cased; schema pieces never pass through here.
-/// Mirrors the whitespace splitter the export was traced against.
+/// Splits evidence into the lowercase words and punctuation used by the traced export.
+/// URLs, email addresses, mentions, and words with internal dashes stay together.
+/// Schema labels bypass this splitter so their original case is preserved.
 /// </summary>
 internal static partial class WordSplitter
 {
