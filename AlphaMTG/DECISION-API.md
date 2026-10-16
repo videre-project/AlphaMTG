@@ -1,6 +1,6 @@
 # Duel and decision API
 
-AlphaMTG listens on port 8080 by default. Set `ALPHAMTG_HTTP_PORT` to change the port. To enable local inference, point `ALPHAMTG_ROUTER_WEIGHTS` to the directory containing `router.json`, the ONNX model and its tokenizer.
+Use these paths under `/api/plugins/alphamtg` on Tracker's HTTP server. `GET /status` returns `connected` and the list of tracked `gameIds`. To enable local inference, set `Plugins:alphamtg:WeightsDirectory` in Tracker.
 
 ## Read a duel
 

@@ -8,7 +8,7 @@ using System.Text.Json.Serialization;
 
 namespace AlphaMTG.MTGOAgent.Controllers.Models;
 
-internal sealed record ExecuteActionRequest(
+public sealed record ExecuteActionRequest(
   [property: JsonRequired] int ActionId,
   [property: JsonRequired] int Nonce,
   int? GameId = null,
@@ -24,4 +24,4 @@ internal sealed record ExecuteActionRequest(
 /// <summary>
 /// Assigns a requested amount to an SDK distribution target.
 /// </summary>
-internal sealed record DistributionInput(int TargetId, int Value);
+public sealed record DistributionInput(int TargetId, int Value);

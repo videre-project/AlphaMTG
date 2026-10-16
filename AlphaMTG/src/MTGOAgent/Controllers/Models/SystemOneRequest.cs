@@ -8,12 +8,12 @@ using System.Text.Json;
 
 namespace AlphaMTG.MTGOAgent.Controllers.Models;
 
-internal sealed record SystemOneRequest(
+public sealed record SystemOneRequest(
   string? Model,
   JsonElement State,
   Dictionary<string, SystemOneQuestionRequest>? Questions);
 
-internal sealed record SystemOneQuestionRequest(
+public sealed record SystemOneQuestionRequest(
   string? Type,
   string? Instructions,
   JsonElement Criteria);

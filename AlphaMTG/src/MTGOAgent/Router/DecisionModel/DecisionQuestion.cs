@@ -10,7 +10,7 @@ namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 /// One named question. Criteria order is significant for a score rubric.
 /// Noul uses the true and false outcomes as its two criteria.
 /// </summary>
-internal sealed record DecisionQuestion(
+public sealed record DecisionQuestion(
   string Type,
   string Instructions,
   IReadOnlyList<DecisionCandidate> Criteria);

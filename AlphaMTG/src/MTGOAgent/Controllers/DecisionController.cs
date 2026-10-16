@@ -20,9 +20,10 @@ namespace AlphaMTG.MTGOAgent.Controllers;
 /// Each question receives its own instructions and criteria against one state.
 /// </summary>
 [ApiController]
-internal sealed class DecisionController(IDecisionModel? model = null) : ControllerBase
+[Route("")]
+public sealed class DecisionController(IDecisionModel? model = null) : ControllerBase
 {
-  [HttpPost("/v1/systemone")]
+  [HttpPost("v1/systemone")]
   public IActionResult Decide([FromBody] SystemOneRequest? request)
   {
     try
@@ -37,7 +38,7 @@ internal sealed class DecisionController(IDecisionModel? model = null) : Control
       if (model is null)
         return StatusCode(503, new
         {
-          error = "No decision model configured: set ALPHAMTG_ROUTER_WEIGHTS to a "
+          error = "No decision model configured: set Plugins:alphamtg:WeightsDirectory to a "
             + "weights directory containing router.json."
         });
       IReadOnlyDictionary<string, DecisionAnswer> answers = model.Decide(state, questions);

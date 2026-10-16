@@ -10,7 +10,7 @@ namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 /// Answers named, instruction-conditioned questions against one shared state.
 /// A backend owns a loaded session and must be disposed.
 /// </summary>
-internal interface IDecisionModel : IDisposable
+public interface IDecisionModel : IDisposable
 {
   IReadOnlyDictionary<string, DecisionAnswer> Decide(
     string state, IReadOnlyDictionary<string, DecisionQuestion> questions);

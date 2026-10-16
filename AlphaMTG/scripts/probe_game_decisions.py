@@ -30,7 +30,7 @@ def request_for(island):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8080", help="Base URL of the decision API")
+    parser.add_argument("base_url", nargs="?", default="https://localhost:7101/api/plugins/alphamtg", help="Base URL of the decision API")
     args = parser.parse_args()
     url = args.base_url.rstrip("/") + "/v1/systemone"
 

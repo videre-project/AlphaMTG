@@ -13,7 +13,7 @@ namespace AlphaMTG.MTGOAgent.Router;
 /// Writes one JSONL execution log per game for diagnostics.
 /// A logging failure does not fail the requested game action.
 /// </summary>
-internal sealed class DecisionLog
+public sealed class DecisionLog(string directory)
 {
   private readonly object _writeLock = new();
   private static readonly JsonSerializerOptions s_jsonOptions = new()
@@ -42,8 +42,6 @@ internal sealed class DecisionLog
         result,
         note
       };
-      string directory = Path.Combine(
-        AppContext.BaseDirectory, "..", "..", "..", "logs");
       Directory.CreateDirectory(directory);
       string line = JsonSerializer.Serialize(record, s_jsonOptions);
       lock (_writeLock)

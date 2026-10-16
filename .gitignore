@@ -4,6 +4,7 @@
 # .NET build output
 **/bin/
 **/obj/
+/publish/
 
 # IDE and editor state
 .vs/

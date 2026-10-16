@@ -1,0 +1,7 @@
+{
+  "id": "alphamtg",
+  "assembly": "AlphaMTG.dll",
+  "entryPoint": "AlphaMTG.AlphaMTGPlugin",
+  "apiVersion": 1,
+  "enabled": true
+}

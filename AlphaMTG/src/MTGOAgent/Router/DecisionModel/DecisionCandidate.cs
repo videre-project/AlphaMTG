@@ -12,7 +12,7 @@ namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 /// <param name="Id">Outcome key, returned unchanged in the answer.</param>
 /// <param name="Label">The short span scored in the [L] list. Usually the key.</param>
 /// <param name="Description">The meaning, supplied in [DESCRIPTION].</param>
-internal sealed record DecisionCandidate(
+public sealed record DecisionCandidate(
   string Id,
   string Label,
   string? Description = null);

@@ -13,7 +13,7 @@ namespace AlphaMTG.MTGOAgent.Router.DecisionModel;
 /// Probabilities are softmax values from the local ONNX logits, not calibrated
 /// probabilities from Fastino's hosted GLiDE service.
 /// </summary>
-internal sealed record DecisionAnswer(
+public sealed record DecisionAnswer(
   string Type,
   double Confidence,
   double? Noul = null,

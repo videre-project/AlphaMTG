@@ -8,7 +8,7 @@ using System.Text.Json.Serialization;
 
 namespace AlphaMTG.MTGOAgent.Controllers.Models;
 
-internal sealed record SelectPlayerRequest(
+public sealed record SelectPlayerRequest(
   [property: JsonRequired] string PlayerName,
   [property: JsonRequired] int Nonce,
   int? GameId = null

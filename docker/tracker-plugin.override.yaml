@@ -1,0 +1,9 @@
+# Paths are relative to Tracker's base docker-compose.yaml.
+services:
+  tracker-dev:
+    environment:
+      Plugins__Directory: 'Z:\plugins'
+      Plugins__alphamtg__WeightsDirectory: ${ALPHAMTG_WEIGHTS_DIRECTORY:-}
+    volumes:
+      - ../AlphaMTG/publish:/plugins:ro
+      - ../AlphaMTG/models:/models:ro

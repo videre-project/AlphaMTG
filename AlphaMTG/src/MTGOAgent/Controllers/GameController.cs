@@ -19,6 +19,7 @@ using MTGOSDK.Core.Remoting.Interop;
 using AlphaMTG.MTGOAgent.Controllers.Models;
 using AlphaMTG.MTGOAgent.Controllers.UIA;
 using AlphaMTG.MTGOAgent.Router;
+using Tracker.Plugin.MTGO;
 
 
 namespace AlphaMTG.MTGOAgent.Controllers;
@@ -27,7 +28,8 @@ namespace AlphaMTG.MTGOAgent.Controllers;
 /// Exposes captured SDK state and dispatches requested game interactions.
 /// </summary>
 [ApiController]
-internal sealed class GameController(Server server, DecisionLog log) : ControllerBase, IDisposable
+[Route("")]
+public sealed class GameController(IMTGOContext session, DecisionLog log) : ControllerBase, IDisposable
 {
   // MVC creates a controller for each request. Keep its captured SDK update
   // throughout dispatch, and create accessibility resources only for selection.
@@ -46,12 +48,32 @@ internal sealed class GameController(Server server, DecisionLog log) : Controlle
   // HTTP endpoints
   //
 
-  [HttpGet("/snapshot")]
+  [HttpGet("status")]
+  public IActionResult Status() => Ok(new
+  {
+    connected = session.Client is not null,
+    gameIds = session.Games.Select(game => game.Id)
+  });
+
+  private Game ResolveGame(int? gameId)
+  {
+    if (session.Client is null)
+      throw new InvalidOperationException("Tracker has no ready MTGO connection.");
+    var games = session.Games;
+    return (gameId.HasValue
+      ? games.FirstOrDefault(game => game.Id == gameId.Value)
+      : games.LastOrDefault())
+      ?? throw new InvalidOperationException(gameId.HasValue
+        ? $"Tracker is not tracking MTGO game {gameId.Value}."
+        : "Tracker is not tracking a live MTGO game.");
+  }
+
+  [HttpGet("snapshot")]
   public IActionResult Snapshot([FromQuery] int? gameId = null)
   {
     try
     {
-      Game game = server.Game(gameId);
+      Game game = ResolveGame(gameId);
       var update = State(game);
       return Ok(GameSnapshot.Create(game.Id, update, GameSnapshot.Actions(update), CanAct(update)));
     }
@@ -61,12 +83,12 @@ internal sealed class GameController(Server server, DecisionLog log) : Controlle
     }
   }
 
-  [HttpGet("/preview-card")]
+  [HttpGet("preview-card")]
   public IActionResult PreviewCard([FromQuery] int cardId, [FromQuery] int? gameId = null)
   {
     try
     {
-      _game = server.Game(gameId);
+      _game = ResolveGame(gameId);
       _update = State(_game);
       GameCard card = CapturedCard(cardId);
       if (card.Zone?.Name != "Battlefield")
@@ -84,7 +106,7 @@ internal sealed class GameController(Server server, DecisionLog log) : Controlle
     }
   }
 
-  [HttpPost("/execute-action")]
+  [HttpPost("execute-action")]
   public IActionResult ExecuteAction([FromBody] ExecuteActionRequest request) =>
     Execute(request.GameId, request.Nonce, request, actions =>
     {
@@ -97,11 +119,11 @@ internal sealed class GameController(Server server, DecisionLog log) : Controlle
       return Dispatch(request, entry.Option, entry.CardId);
     });
 
-  [HttpPost("/select-card")]
+  [HttpPost("select-card")]
   public IActionResult SelectCard([FromBody] SelectCardRequest request) =>
     Execute(request.GameId, request.Nonce, request, _ => SelectCard(request.CardId));
 
-  [HttpPost("/select-player")]
+  [HttpPost("select-player")]
   public IActionResult SelectPlayer([FromBody] SelectPlayerRequest request) =>
     Execute(request.GameId, request.Nonce, request, _ => SelectPlayer(request.PlayerName));
 
@@ -119,7 +141,7 @@ internal sealed class GameController(Server server, DecisionLog log) : Controlle
       gameId: gameId, revision: nonce);
     try
     {
-      Game game = _game = server.Game(gameId);
+      Game game = _game = ResolveGame(gameId);
       var update = _update = State(game);
       if (!CanAct(update))
         throw new InvalidOperationException("The current SDK prompt does not offer local execution.");
@@ -674,7 +696,7 @@ internal sealed class GameController(Server server, DecisionLog log) : Controlle
 
   private bool CanAct(GameStateChangedEventArgs update) =>
     update.Snapshot.Players.TryGetValue(update.Prompt.PromptedPlayer, out var player)
-      && player.UserId == server.LocalUserId
+      && player.UserId == session.UserId
       && (update.Snapshot.Players.Count == 1 || player.HasPriority);
 
   private static string FirstLine(Exception exception) => exception.Message.Split('\n')[0];

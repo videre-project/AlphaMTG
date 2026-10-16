@@ -1,27 +1,30 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows7.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <LangVersion>Latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <OutputType>Exe</OutputType>
+    <OutputType>Library</OutputType>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <TrackerRoot Condition="'$(TrackerRoot)' == ''">$(MSBuildThisFileDirectory)../../Tracker</TrackerRoot>
     <EnableWindowsTargeting Condition="'$(OS)' != 'Windows_NT'">true</EnableWindowsTargeting>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="$(TrackerRoot)/src/plugins/Tracker.Plugin.Abstractions/Tracker.Plugin.Abstractions.csproj" />
+    <ProjectReference Include="$(TrackerRoot)/src/plugins/Tracker.Plugin.MTGO/Tracker.Plugin.MTGO.csproj" />
+    <None Update="plugin.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- UI Automation locates player boxes and scrollable zone viewports. -->
     <PackageReference Include="FlaUI.Core" Version="5.0.0" />
     <PackageReference Include="FlaUI.UIA2" Version="5.0.0" />
-    <PackageReference Include="MTGOSDK"
-                      Version="1.7.2.20261016-actions.10" />
-    <PackageReference Include="MTGOSDK.Win32"
-                      Version="1.7.2.20261016-actions.10" />
+    <!-- MTGOSDK is supplied by Tracker.Plugin.MTGO at the host's version. -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime"
                       Version="1.30.0" />
   </ItemGroup>
