@@ -20,7 +20,7 @@ using MTGOSDK.Core.Remoting.Interop;
 using AlphaMTG.MTGOAgent.Controllers.Models;
 using AlphaMTG.MTGOAgent.Controllers.UIA;
 using AlphaMTG.MTGOAgent.Router;
-using Tracker.Plugin.MTGO;
+using Tracker.Plugins;
 
 
 namespace AlphaMTG.MTGOAgent.Controllers;

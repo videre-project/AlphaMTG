@@ -4,13 +4,11 @@ services:
     working_dir: /AlphaMTG
     user: "${UID:-1000}:${GID:-1000}"
     environment:
-      TrackerRoot: /Tracker
       DOTNET_CLI_HOME: /tmp/dotnet
       NUGET_PACKAGES: /nuget
     tmpfs:
       - /nuget:uid=${UID:-1000},gid=${GID:-1000}
     volumes:
       - .:/AlphaMTG
-      - ../Tracker:/Tracker
-      - ../MTGOSDK/packages:/MTGOSDK/packages:ro
-    command: ["bash", "scripts/build-plugin.sh"]
+      - ${PLUGIN_PACKAGES:-./packages}:/packages:ro
+    command: ["bash", "scripts/build-plugin.sh", "--source", "/packages", "--source", "https://api.nuget.org/v3/index.json"]

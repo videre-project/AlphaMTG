@@ -5,6 +5,7 @@
 **/bin/
 **/obj/
 /publish/
+/packages/
 
 # IDE and editor state
 .vs/
@@ -12,6 +13,7 @@
 *.suo
 *.user
 *.userosscache
+SESSION*.md
 
 # Test and coverage output
 TestResults/
@@ -23,3 +25,13 @@ AlphaMTG/native-ui.json
 
 # OS-generated files
 .DS_Store
+
+# Local checkpoints, captures and transcripts
+/.cache/
+/AlphaMTG/logs/
+/build-out.log
+__pycache__/
+/models/*
+!/models/gliner-decide/
+/models/gliner-decide/*
+!/models/gliner-decide/router.json

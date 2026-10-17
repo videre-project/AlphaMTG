@@ -9,13 +9,17 @@ using Microsoft.Extensions.DependencyInjection;
 
 using AlphaMTG.MTGOAgent.Router;
 using AlphaMTG.MTGOAgent.Router.DecisionModel;
-using Tracker.Plugin;
+using Tracker.Plugins;
+
 
 namespace AlphaMTG;
 
-/// <summary>Registers AlphaMTG's decision and action services with Tracker.</summary>
+/// <summary>
+/// Registers AlphaMTG's decision and action services with Tracker.
+/// </summary>
 public sealed class AlphaMTGPlugin : ITrackerPlugin
 {
+  /// <inheritdoc/>
   public void ConfigureServices(IServiceCollection services, PluginContext context)
   {
     services.AddSingleton(_ => new DecisionLog(Path.Combine(context.DataDirectory, "logs")));
