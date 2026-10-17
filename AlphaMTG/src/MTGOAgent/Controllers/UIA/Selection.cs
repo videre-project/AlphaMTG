@@ -13,7 +13,6 @@ using MTGOSDK.API.Play.Games;
 using MTGOSDK.API.Play.Games.Processors.Events;
 
 using CardPosition = MTGOSDK.API.Interface.ViewModels.CardViewModel.Position;
-using ScreenBounds = MTGOSDK.API.Interface.ViewModels.CardViewModel.ScreenBounds;
 
 
 namespace AlphaMTG.MTGOAgent.Controllers.UIA;
@@ -94,88 +93,45 @@ internal sealed class Selection(Game game, GameStateChangedEventArgs update) : I
     scene ??= Scene;
     string? zone = card.Zone?.Name;
 
-    // Scroll zone lists before capturing the target and neighboring views together.
-    if (zone is "Graveyard" or "Exile")
-    {
-      ScreenBounds initial = scene.GetCardPosition(card.Id)
-        ?? throw new InvalidOperationException($"Card {card.Id} has no live screen position.");
-      EnsureInZoneViewport(card, initial, scene);
-    }
-
     var ids = _update.Snapshot.Cards.Values.Concat(_update.Snapshot.HiddenCards.Values)
       .Where(candidate => candidate.Zone?.Name == zone)
       .Select(candidate => candidate.Id)
       .ToList();
-    var positions = scene.GetCardPositions(ids);
-    CardPosition placement = positions.GetValueOrDefault(card.Id)
-      ?? throw new InvalidOperationException($"Card {card.Id} has no live screen position.");
-    ScreenBounds position = placement.Bounds;
-    var target = new Rectangle(position.X, position.Y, position.Width, position.Height);
-    var occluders = positions.Where(pair => pair.Key != card.Id)
-      .Select(pair => pair.Value)
-      .Where(other => other.PanelIndex != placement.PanelIndex
-        || other.ZIndex > placement.ZIndex
-        || (other.ZIndex == placement.ZIndex && other.ChildIndex > placement.ChildIndex))
-      .Select(other => other.Bounds)
-      .Select(point => new Rectangle(point.X, point.Y, point.Width, point.Height))
-      .Where(rect => rect.Width > 0 && rect.Height > 0)
-      .Where(rect => rect.IntersectsWith(target))
-      .Distinct()
-      .ToList();
-
-    List<Rectangle> visible = UncoveredRegions(target, occluders);
-    Point? point = SafePoint(visible);
-    return (target, occluders, visible, point, positions);
-  }
-
-  /// <summary>
-  /// Brings a card into the owner's scrollable zone viewport, checking native
-  /// coordinates after each scroll. The panel is resolved once for this selection.
-  /// </summary>
-  private void EnsureInZoneViewport(
-    GameCard card, ScreenBounds position, DuelSceneViewModel scene)
-  {
-    var panel = FindOwnerZonePanel(card, scene);
-    if (panel is null) return;
-
-    Rectangle viewport = panel.Value.Viewport;
-    int comfort = viewport.Height / 3;
-    var start = position;
-    for (int attempts = 0; attempts < 10; attempts++)
+    for (int attempts = 0; ; attempts++)
     {
-      if (IsInZoneViewport(viewport, position, comfort)) return;
-
-      bool below = position.Y >= viewport.Bottom - comfort;
-      AutomationElement button = below ? panel.Value.DownButton : panel.Value.UpButton;
-      button.AsButton().Invoke();
-      Thread.Sleep(400);
-      position = scene.GetCardPosition(card.Id)
+      SelectionViewport viewport = SelectionViewport.ForCard(scene, card.Id);
+      var positions = scene.GetCardPositions(ids);
+      CardPosition placement = positions.GetValueOrDefault(card.Id)
         ?? throw new InvalidOperationException($"Card {card.Id} has no live screen position.");
+      var position = placement.Bounds;
+      var target = new Rectangle(position.X, position.Y, position.Width, position.Height);
+      var occluders = positions.Where(pair => pair.Key != card.Id)
+        .Select(pair => pair.Value)
+        .Where(other => other.PanelIndex != placement.PanelIndex
+          || other.ZIndex > placement.ZIndex
+          || (other.ZIndex == placement.ZIndex && other.ChildIndex > placement.ChildIndex))
+        .Select(other => other.Bounds)
+        .Select(point => new Rectangle(point.X, point.Y, point.Width, point.Height))
+        .Concat(viewport.Controls)
+        .Where(rect => rect.Width > 0 && rect.Height > 0)
+        .Where(rect => rect.IntersectsWith(target))
+        .Distinct()
+        .ToList();
+
+      // A partially visible card is clickable; its top-left corner need not
+      // reach the middle of the list. Never choose pixels outside its viewport.
+      Rectangle clipped = Rectangle.Intersect(target, viewport.Bounds);
+      List<Rectangle> visible = clipped.IsEmpty ? [] : UncoveredRegions(clipped, occluders);
+      Point? point = SafePoint(visible);
+      if (point.HasValue) return (target, occluders, visible, point, positions);
+
+      bool below = target.Bottom > viewport.Bounds.Bottom;
+      if (attempts == 10 || !viewport.Scroll(below))
+        throw new InvalidOperationException(
+          $"Card {card.Id} has no uncovered click area in its containing viewport "
+            + $"{viewport.Bounds} (card bounds {target}).");
+      Thread.Sleep(400);
     }
-    if (IsInZoneViewport(viewport, position, comfort)) return;
-
-    throw new InvalidOperationException(
-      $"Card {card.Id} did not reach the viewport in 10 scrolls "
-        + $"(start {start.X},{start.Y}, end {position.X},{position.Y}).");
-  }
-
-  private static bool IsInZoneViewport(
-    Rectangle viewport,
-    ScreenBounds position,
-    int yMargin) =>
-    position.X >= viewport.X + 8
-      && position.X < viewport.Right - 8
-      && position.Y >= viewport.Y + yMargin
-      && position.Y < viewport.Bottom - yMargin;
-
-  private (Rectangle Viewport, AutomationElement UpButton, AutomationElement DownButton)?
-    FindOwnerZonePanel(GameCard card, DuelSceneViewModel scene)
-  {
-    string? owner = _update.Snapshot.Players
-      .GetValueOrDefault(card.OwnerIndex)?.Name;
-    if (string.IsNullOrEmpty(owner)) return null;
-
-    return _session.Value.FindZoneListPanel(owner, SelectionClick.GetWindowHandle(scene));
   }
 
   private static List<Rectangle> UncoveredRegions(

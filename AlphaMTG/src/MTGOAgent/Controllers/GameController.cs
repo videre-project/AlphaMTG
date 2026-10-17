@@ -6,6 +6,7 @@
 using System.Drawing;
 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 using MTGOSDK.Core.Diagnostics;
 using MTGOSDK.API.Interface.Controls;
@@ -29,7 +30,7 @@ namespace AlphaMTG.MTGOAgent.Controllers;
 /// </summary>
 [ApiController]
 [Route("")]
-public sealed class GameController(IMTGOContext session, DecisionLog log) : ControllerBase, IDisposable
+public sealed class GameController(IMTGOContext session, DecisionLog log, ILogger<GameController> logger) : ControllerBase, IDisposable
 {
   // MVC creates a controller for each request. Keep its captured SDK update
   // throughout dispatch, and create accessibility resources only for selection.
@@ -154,7 +155,24 @@ public sealed class GameController(IMTGOContext session, DecisionLog log) : Cont
           throw new ArgumentException($"The SDK update is at nonce {update.Nonce}, not {nonce}.");
         if (State(game).Nonce != nonce)
           throw new InvalidOperationException("The game or local interaction changed. Re-read the state before acting.");
-        result = execute(actions);
+        DuelSceneViewModel scene = Scene;
+        SelectionClick.ClearHover(scene);
+        try
+        {
+          result = execute(actions);
+        }
+        finally
+        {
+          // MTGO may close the duel window as a result of the command.
+          try
+          {
+            SelectionClick.ClearHover(scene);
+          }
+          catch (Exception cleanupError)
+          {
+            logger.LogWarning(cleanupError, "Could not clear hover zoom after dispatch.");
+          }
+        }
       }
       catch (Exception exception)
       {
@@ -286,6 +304,9 @@ public sealed class GameController(IMTGOContext session, DecisionLog log) : Cont
   /// </summary>
   private object ExecuteTargets(int actionId, CardAction action, int targetSetId, int targetId)
   {
+    if (_update.Interaction.Mode != InteractionMode.SelectTargets)
+      throw new InvalidOperationException(
+        "Target selection is not open. Execute the source card action, then re-read the state before selecting its targets.");
     if (targetSetId < 0 || targetSetId >= action.Targets.Count)
       throw new ArgumentException($"Action {actionId} has no target set {targetSetId}.");
 

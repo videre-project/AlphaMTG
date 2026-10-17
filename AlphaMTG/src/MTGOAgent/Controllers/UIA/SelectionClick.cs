@@ -4,6 +4,8 @@
 **/
 
 using System.Reflection;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -24,6 +26,45 @@ namespace AlphaMTG.MTGOAgent.Controllers.UIA;
 /// </summary>
 internal static class SelectionClick
 {
+  /// <summary>
+  /// Parks the pointer on the window chrome and uses MTGO's mouse-leave path
+  /// to close hover zoom and stop its timer without cancelling an interaction.
+  /// </summary>
+  internal static void ClearHover(DuelSceneViewModel duel)
+  {
+    IntPtr handle = GetWindowHandle(duel);
+    if (!GetWindowRect(handle, out var bounds)
+      || !SetCursorPos(bounds.Left + 4, bounds.Top + 4))
+      throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not park the MTGO pointer.");
+
+    var batch = new RemoteBatch { ForceUIThread = true };
+    var scene = batch.Input((object)Unbind(duel));
+    var root = batch.Read(scene, "DuelSceneRoot");
+    var device = batch.CallStatic(Method(typeof(Mouse), "get_PrimaryDevice"));
+    var args = batch.Create(Method(typeof(MouseEventArgs), ".ctor", typeof(MouseDevice), typeof(int)),
+      device, batch.Input(Environment.TickCount));
+    batch.Call(args, Method(typeof(RoutedEventArgs), "set_RoutedEvent", typeof(RoutedEvent)),
+      ReadEvent(batch, typeof(UIElement), nameof(UIElement.MouseMoveEvent)));
+    batch.Call(args, Method(typeof(RoutedEventArgs), "set_Source", typeof(object)), root);
+    var sceneType = new RemoteBatchType("Shiny.Play.Duel.ViewModel.DuelSceneViewModel", "DuelScene");
+    foreach (string method in new[] { "OnMouseMove", "OnMouseLeave" })
+      batch.Call(scene, new(sceneType, method,
+        RemoteBatchType.From(typeof(object)), RemoteBatchType.From(typeof(MouseEventArgs))),
+        batch.Input(ObjectOrRemoteAddress.Null), args);
+    batch.Execute(RemoteClient.client);
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct WindowBounds { public int Left, Top, Right, Bottom; }
+
+  [DllImport("user32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool GetWindowRect(IntPtr handle, out WindowBounds bounds);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool SetCursorPos(int x, int y);
+
   /// <summary>
   /// Resolves the window containing this game's duel for UI Automation queries.
   /// </summary>
@@ -48,8 +89,11 @@ internal static class SelectionClick
     {
       // Hit-test the owning window so coordinates and occluding visuals use
       // the same WPF surface as the geometry supplied by the SDK.
+      dynamic root = expectedCardId.HasValue
+        ? scene.Game.FindGameCard(expectedCardId.Value).Tag.CardViewModel.m_battlefieldPositionView
+        : scene.DuelSceneRoot;
       dynamic window = RemoteClient.InvokeMethod(
-        "System.Windows.Window", nameof(Window.GetWindow), null, scene.DuelSceneRoot);
+        "System.Windows.Window", nameof(Window.GetWindow), null, root);
       var activator = new RemoteActivator(RemoteClient.client.Communicator, RemoteClient.client);
       dynamic screenPoint = activator.CreateInstance(
         "WindowsBase", "System.Windows.Point", x, y).Dynamify();
@@ -71,6 +115,8 @@ internal static class SelectionClick
         int hitCardId = value.GetScalar<int>();
         if (hitCardId != expectedCardId.Value)
           throw new InvalidOperationException($"Hit card {hitCardId}, expected card {expectedCardId.Value}.");
+        if ((bool)item.HasAnimatedProperties)
+          throw new InvalidOperationException($"Card {hitCardId} is still animating. Re-read the state before selecting it.");
       }
     }
 

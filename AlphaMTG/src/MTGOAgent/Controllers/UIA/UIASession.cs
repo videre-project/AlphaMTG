@@ -14,7 +14,7 @@ using MTGOSDK.Core.Diagnostics;
 namespace AlphaMTG.MTGOAgent.Controllers.UIA;
 
 /// <summary>
-/// Locates player mats and scroll controls in MTGO's UI Automation tree.
+/// Locates player mats in MTGO's UI Automation tree.
 /// </summary>
 internal sealed class UIASession : IDisposable
 {
@@ -45,12 +45,6 @@ internal sealed class UIASession : IDisposable
     {
       return null;
     }
-  }
-
-  private static string? GetClassName(AutomationElement element)
-  {
-    try { return element.Properties.ClassName.ValueOrDefault; }
-    catch { return null; }
   }
 
   /// <summary>
@@ -86,44 +80,4 @@ internal sealed class UIASession : IDisposable
     }
   }
 
-  /// <summary>
-  /// Finds a player's scrollable zone list (graveyard, exile) in the duel
-  /// side panel, with its viewport and scroll buttons.
-  /// </summary>
-  /// <remarks>
-  /// Graveyard and exile rows are realized views positioned past the visible
-  /// viewport when scrolled out, so a native coordinate alone can point at
-  /// pixels showing something else. The panel itself is a fixed viewport with
-  /// up/down repeat buttons. UI Automation locates these controls and invokes
-  /// them to bring the row into view.
-  /// </remarks>
-  public (Rectangle Viewport, AutomationElement UpButton, AutomationElement DownButton)?
-    FindZoneListPanel(string playerName, IntPtr windowHandle)
-  {
-    AutomationElement? box = FindPlayerBox(playerName, windowHandle);
-    AutomationElement? side = box is null ? null : ClimbToClass(box, "PlayerInfoSideView");
-    AutomationElement? panel = side?.FindFirstChild(cf => cf.ByClassName("VerticalPanelView"));
-    if (panel is null || GetBounds(panel) is not Rectangle viewport) return null;
-
-    AutomationElement? up = side!.FindFirstDescendant(cf => cf.ByAutomationId("UpArrow"));
-    AutomationElement? down = side.FindFirstDescendant(cf => cf.ByAutomationId("DownArrow"));
-    return up is not null && down is not null ? (viewport, up, down) : null;
-  }
-
-  private static AutomationElement? ClimbToClass(
-    AutomationElement element,
-    string className)
-  {
-    for (AutomationElement? current = element; current is not null;
-      current = current.Parent)
-    {
-      if (string.Equals(
-        GetClassName(current), className, StringComparison.Ordinal))
-      {
-        return current;
-      }
-    }
-
-    return null;
-  }
 }

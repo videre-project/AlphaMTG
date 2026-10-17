@@ -42,6 +42,8 @@ Use `/execute-action` for a card ability or a prompt button. For an action that 
 
 Pile choices appear as separate `ChoosePile` actions. For a card action with several target sets, the response indicates whether more selections are needed.
 
+To target with a card ability, execute its source action first, then read a fresh snapshot. Once `interactionMode` is `SelectTargets`, send the target set and target ID with the new nonce. AlphaMTG scrolls the card into view when needed and clears hover zoom before clicking. If the card is animating, wait for it to settle before retrying.
+
 ## Ask the decision model
 
 `POST /v1/systemone` scores named questions about a shared `state` using GLiNER2.5-Decide locally. Each question runs independently. Supply a nonempty state (a string, object or array) and a `questions` object. Each question has a `type`, an `instructions` string describing the decision, and criteria appropriate to its type.
