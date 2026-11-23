@@ -8,7 +8,6 @@ using System.Drawing;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
-using MTGOSDK.Core.Diagnostics;
 using MTGOSDK.API.Interface.Controls;
 using MTGOSDK.API.Interface.ViewModels;
 using MTGOSDK.API.Play.Games;
@@ -20,7 +19,7 @@ using MTGOSDK.Core.Remoting.Interop;
 using AlphaMTG.MTGOAgent.Controllers.Models;
 using AlphaMTG.MTGOAgent.Controllers.UIA;
 using AlphaMTG.MTGOAgent.Router;
-using Tracker.Plugins;
+using MTGOTracker.Plugins;
 
 
 namespace AlphaMTG.MTGOAgent.Controllers;
@@ -138,8 +137,10 @@ public sealed class GameController(IMTGOContext session, DecisionLog log, ILogge
     object request,
     Func<IReadOnlyList<(IPromptOption Option, int? CardId, ulong? LogicalAddress)>, object> execute)
   {
-    using var timing = LocalTelemetry.Begin("alpha.execute", request.GetType().Name,
-      gameId: gameId, revision: nonce);
+    using var timing = AlphaMTGPlugin.Activities.StartActivity("alpha.execute");
+    timing?.SetTag("request", request.GetType().Name);
+    timing?.SetTag("gameId", gameId);
+    timing?.SetTag("revision", nonce);
     try
     {
       Game game = _game = ResolveGame(gameId);

@@ -21,8 +21,8 @@
     <!-- UI Automation locates player boxes and scrollable zone viewports. -->
     <PackageReference Include="FlaUI.Core" Version="5.0.0" />
     <PackageReference Include="FlaUI.UIA2" Version="5.0.0" />
-    <PackageReference Include="MTGOSDK" Version="1.7.2.20261016-actions.15" />
-    <PackageReference Include="Tracker.Plugins" Version="0.1.0-preview.1" />
+    <PackageReference Include="MTGOSDK" Version="1.8.1.20261028" />
+    <PackageReference Include="MTGOTracker.Plugins" Version="0.1.0-preview.2" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime"
                       Version="1.30.0" />
   </ItemGroup>

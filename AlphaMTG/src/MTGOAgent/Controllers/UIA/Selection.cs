@@ -7,7 +7,6 @@ using System.Drawing;
 
 using FlaUI.Core.AutomationElements;
 
-using MTGOSDK.Core.Diagnostics;
 using MTGOSDK.API.Interface.ViewModels;
 using MTGOSDK.API.Play.Games;
 using MTGOSDK.API.Play.Games.Processors.Events;
@@ -39,14 +38,14 @@ internal sealed class Selection(Game game, GameStateChangedEventArgs update) : I
   /// </summary>
   internal Point SelectCard(GameCard card)
   {
-    using var timing = LocalTelemetry.Begin("alpha.select.card");
+    using var timing = AlphaMTGPlugin.Activities.StartActivity("alpha.select.card");
     DuelSceneViewModel scene = Scene;
     int cardId = card.Id;
     Point point = GetClickArea(card, scene).ClickPoint
       ?? throw new InvalidOperationException(
         $"Card {cardId} has no safe uncovered area to click.");
 
-    using (LocalTelemetry.Begin("alpha.click", "card"))
+    using (AlphaMTGPlugin.Activities.StartActivity("alpha.click")?.SetTag("target", "card"))
       SelectionClick.Select(point.X, point.Y, scene, expectedCardId: cardId);
     return point;
   }
@@ -57,11 +56,11 @@ internal sealed class Selection(Game game, GameStateChangedEventArgs update) : I
   /// </summary>
   internal void SelectPlayer(string playerName)
   {
-    using var timing = LocalTelemetry.Begin("alpha.select.player");
+    using var timing = AlphaMTGPlugin.Activities.StartActivity("alpha.select.player");
     DuelSceneViewModel scene = Scene;
     IntPtr windowHandle = SelectionClick.GetWindowHandle(scene);
     AutomationElement element;
-    using (LocalTelemetry.Begin("alpha.player.lookup"))
+    using (AlphaMTGPlugin.Activities.StartActivity("alpha.player.lookup"))
       element = _session.Value.FindPlayerBox(playerName, windowHandle)
         ?? throw new InvalidOperationException(
           $"No player box for '{playerName}' in the duel scene.");
@@ -75,7 +74,7 @@ internal sealed class Selection(Game game, GameStateChangedEventArgs update) : I
     Rectangle box = UIASession.GetBounds(element)
       ?? throw new InvalidOperationException(
         $"Player box for '{playerName}' has no bounds.");
-    using (LocalTelemetry.Begin("alpha.click", "player"))
+    using (AlphaMTGPlugin.Activities.StartActivity("alpha.click")?.SetTag("target", "player"))
       SelectionClick.Select(box.X + box.Width / 2, box.Y + box.Height / 2, scene);
   }
 
@@ -89,7 +88,7 @@ internal sealed class Selection(Game game, GameStateChangedEventArgs update) : I
     IReadOnlyDictionary<int, CardPosition> Positions) GetClickArea(
       GameCard card, DuelSceneViewModel? scene = null)
   {
-    using var timing = LocalTelemetry.Begin("alpha.card.geometry");
+    using var timing = AlphaMTGPlugin.Activities.StartActivity("alpha.card.geometry");
     scene ??= Scene;
     string? zone = card.Zone?.Name;
 

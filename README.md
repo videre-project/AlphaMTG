@@ -6,13 +6,13 @@ This repository implements the agent's interaction with MTGO as a [Videre Tracke
 
 ## Build and install
 
-Build with a .NET 10 SDK and the MTGOSDK version used by your Tracker installation. Place the `MTGOSDK` `1.7.2.20261016-actions.15` and `Tracker.Plugins` `0.1.0-preview.1` packages in `packages/`, then run the publish script.
+Build with the .NET 10 SDK for Tracker 0.4.0. The build restores `MTGOTracker.Plugins` and Tracker's matching version of `MTGOSDK` from NuGet.org.
 
 ```sh
-bash scripts/build-plugin.sh --source "$PWD/packages" --source https://api.nuget.org/v3/index.json
+bash scripts/build-plugin.sh
 ```
 
-To publish in Docker, run `docker compose run --rm plugin-build`. Set `PLUGIN_PACKAGES` if your local NuGet feed is outside `packages/`. For a local build, `ALPHAMTG_PLUGIN_OUTPUT` changes the publish directory.
+To publish in Docker, run `docker compose run --rm plugin-build`. For a local build, set `ALPHAMTG_PLUGIN_OUTPUT` to change the publish directory.
 
 Copy `publish/alphamtg` into the `Plugins` directory under Tracker's user data, then restart Tracker. To load plugins directly from your build, set `Plugins:Directory` to the parent `publish` directory. Keep `plugin.json` and its dependencies together. You can disable AlphaMTG by setting `enabled` to `false` in that manifest and restarting Tracker.
 

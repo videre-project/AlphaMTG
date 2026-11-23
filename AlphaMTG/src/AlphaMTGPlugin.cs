@@ -3,13 +3,14 @@
   SPDX-License-Identifier: Apache-2.0
 **/
 
+using System.Diagnostics;
 using System.IO;
 
 using Microsoft.Extensions.DependencyInjection;
 
 using AlphaMTG.MTGOAgent.Router;
 using AlphaMTG.MTGOAgent.Router.DecisionModel;
-using Tracker.Plugins;
+using MTGOTracker.Plugins;
 
 
 namespace AlphaMTG;
@@ -19,6 +20,8 @@ namespace AlphaMTG;
 /// </summary>
 public sealed class AlphaMTGPlugin : ITrackerPlugin
 {
+  internal static readonly ActivitySource Activities = new("AlphaMTG");
+
   /// <inheritdoc/>
   public void ConfigureServices(IServiceCollection services, PluginContext context)
   {

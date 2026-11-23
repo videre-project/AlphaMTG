@@ -10,5 +10,4 @@ services:
       - /nuget:uid=${UID:-1000},gid=${GID:-1000}
     volumes:
       - .:/AlphaMTG
-      - ${PLUGIN_PACKAGES:-./packages}:/packages:ro
-    command: ["bash", "scripts/build-plugin.sh", "--source", "/packages", "--source", "https://api.nuget.org/v3/index.json"]
+    command: ["bash", "scripts/build-plugin.sh"]

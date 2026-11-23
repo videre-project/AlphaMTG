@@ -31,25 +31,25 @@
       },
       "MTGOSDK": {
         "type": "Direct",
-        "requested": "[1.7.2.20261016-actions.15, )",
-        "resolved": "1.7.2.20261016-actions.15",
-        "contentHash": "TO+tjyZuVw46pI8tVEYnsn1+zEgUji07fOw+Lt+33vo8+1FYVBoPxgU51KDafxDDCN6fpQi9bXyqiKVseeIBMw==",
+        "requested": "[1.8.1.20261028, )",
+        "resolved": "1.8.1.20261028",
+        "contentHash": "2aWCkCSs2uS7QEi4CVHWCMpN8Fy/oek69DACm+aNiYlspW9KqI1PUJHRQdhDhJ6su43iSWieED0NM5VbXhlKmA==",
         "dependencies": {
           "ImpromptuInterface": "8.0.6",
-          "MTGOSDK.Win32": "1.7.2.20261016-actions.15",
+          "MTGOSDK.Win32": "1.8.1.20261028",
           "MessagePack": "3.1.7",
           "MessagePack.Annotations": "3.1.7",
           "Microsoft.Bcl.AsyncInterfaces": "10.0.1",
           "Microsoft.Diagnostics.Runtime": "4.0.0-beta.24360.3"
         }
       },
-      "Tracker.Plugins": {
+      "MTGOTracker.Plugins": {
         "type": "Direct",
-        "requested": "[0.1.0-preview.1, )",
-        "resolved": "0.1.0-preview.1",
-        "contentHash": "Wo3rd1cxdPhNEIIQ92DHbQlK61EkEM8o5Z02+g8YL6W/7yTkUFz3URG7tXh/U/OTgJhe4A+n+ot2nm6rsYoQnA==",
+        "requested": "[0.1.0-preview.2, )",
+        "resolved": "0.1.0-preview.2",
+        "contentHash": "mboN52EPp535j4tTmb9cYDVKHo+cK+bDvyosvSSa4qedxC5ZQAVRkBoxlJFimh4bhhfp6TLXb9/A/opaun/9Pg==",
         "dependencies": {
-          "MTGOSDK": "1.7.2.20261016-actions.15"
+          "MTGOSDK": "1.8.1.20261028"
         }
       },
       "Azure.Core": {
@@ -165,8 +165,8 @@
       },
       "MTGOSDK.Win32": {
         "type": "Transitive",
-        "resolved": "1.7.2.20261016-actions.15",
-        "contentHash": "TOpxLvwoXt2nBttzUy+f56ls2SQk74ghV418Zu/A/dWVqFXUm7i1ppd56xcUXw75NF84TVN+AR+Z2a6sAk/UGw==",
+        "resolved": "1.8.1.20261028",
+        "contentHash": "MwsVpIL84WBEOImOY37HePqmJZdfiE4Q2CpwRLuL0S9TfWtLIFMSAvp5KOJBjP64KcxcBANaxXqNcIZXhOWWqw==",
         "dependencies": {
           "Iced": "1.21.0"
         }

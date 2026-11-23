@@ -8,8 +8,6 @@ using System.Drawing;
 using FlaUI.Core.AutomationElements;
 using FlaUI.UIA2;
 
-using MTGOSDK.Core.Diagnostics;
-
 
 namespace AlphaMTG.MTGOAgent.Controllers.UIA;
 
@@ -22,7 +20,7 @@ internal sealed class UIASession : IDisposable
 
   public UIASession()
   {
-    using var timing = LocalTelemetry.Begin("alpha.uia.session");
+    using var timing = AlphaMTGPlugin.Activities.StartActivity("alpha.uia.session");
     _automation = new();
   }
 
@@ -56,7 +54,7 @@ internal sealed class UIASession : IDisposable
   /// </remarks>
   public AutomationElement? FindPlayerBox(string playerName, IntPtr windowHandle)
   {
-    using var timing = LocalTelemetry.Begin("alpha.uia.find_player");
+    using var timing = AlphaMTGPlugin.Activities.StartActivity("alpha.uia.find_player");
     foreach (AutomationElement box in PlayerBoxes(windowHandle))
     {
       if (box.FindFirstDescendant(cf => cf.ByName(playerName)) is not null)
